@@ -18,7 +18,7 @@ You can install this script in several ways:
 
 ```bash
 # Download the script
-curl -o turso-latency-checker https://raw.githubusercontent.com/YOUR_USERNAME/turso-latency-checker/main/turso-latency-checker.sh
+curl -o turso-latency-checker https://raw.githubusercontent.com/renchris/turso-latency-checker/main/turso-latency-checker.sh
 
 # Make it executable
 chmod +x turso-latency-checker
@@ -31,7 +31,7 @@ sudo mv turso-latency-checker /usr/local/bin/
 
 ```bash
 # Clone the repository
-git clone https://github.com/YOUR_USERNAME/turso-latency-checker.git
+git clone https://github.com/renchris/turso-latency-checker.git
 
 # Enter the directory
 cd turso-latency-checker
