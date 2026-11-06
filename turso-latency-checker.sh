@@ -176,6 +176,9 @@ resolve_modes() {
   ACCESSIBLE=
   BOLD=
   RESET=
+  HELP_HEADING=
+  HELP_COMMAND=
+  HELP_FAINT=
   E_RED=
   E_CYAN=
   E_RESET=
@@ -204,6 +207,9 @@ resolve_modes() {
   if [ -n "$RICH_OUT" ] && color_for 1; then
     BOLD=$'\033[1m'
     RESET=$'\033[0m'
+    HELP_HEADING=$'\033[1;34m'
+    HELP_COMMAND=$'\033[36m'
+    HELP_FAINT=$'\033[2m'
   fi
   # Forced color on a plain stderr tints only the Error:/Warning: prefix.
   if color_for 2; then
@@ -356,7 +362,55 @@ print_options() {
   done <<<"$OPTS"
 }
 
+# Plain help goes through untouched; a rich terminal gets headings, option names,
+# example commands and the summary styled, and everything else in normal foreground.
+style_help() {
+  local line section=
+  if [ -z "$RESET" ]; then
+    cat
+    return
+  fi
+  while IFS= read -r line; do
+    case "$line" in
+      Usage:*) section=summary ;;
+      Options: | Examples: | Notes:)
+        section=$line
+        printf '%s%s%s\n' "$HELP_HEADING" "$line" "$RESET"
+        continue
+        ;;
+      'Learn more: '*)
+        printf '%sLearn more:%s %s\n' "$HELP_HEADING" "$RESET" "${line#Learn more: }"
+        continue
+        ;;
+      '') ;;
+      *)
+        case "$section" in
+          summary)
+            printf '%s%s%s\n' "$HELP_FAINT" "$line" "$RESET"
+            section=
+            continue
+            ;;
+          Options:)
+            printf '%s%s%s%s\n' "$BOLD" "${line:0:28}" "$RESET" "${line:28}"
+            continue
+            ;;
+          Examples:)
+            case "$line" in
+              '    '*)
+                printf '    %s%s%s\n' "$HELP_COMMAND" "${line#    }" "$RESET"
+                continue
+                ;;
+            esac
+            ;;
+        esac
+        ;;
+    esac
+    printf '%s\n' "$line"
+  done
+}
+
 usage() {
+  {
   cat <<'USAGE'
 Usage: turso-latency-checker [options]
 Measure latency to every Turso region and show the fastest
@@ -382,6 +436,7 @@ Notes:
 
 Learn more: https://github.com/renchris/turso-latency-checker#readme
 USAGE
+  } | style_help
 }
 
 # Every Turso region

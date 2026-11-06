@@ -590,3 +590,13 @@ has_animation() {
   [ "$(grep -c '^bog ' "$STUB_CURL_LOG")" -eq 2 ]
   [ "$(grep -c '^arn ' "$STUB_CURL_LOG")" -eq 1 ]
 }
+
+@test "B12-T1 help is styled only on a rich terminal" {
+  run_tty --help
+  [[ $output == *$'\033[1;34m'Options:$'\033[0m'* ]]
+  styled=$(printf '%s\n' "$output" | strip_ansi | LC_ALL=C tr -d '\r')
+  run_cli --help
+  [ "$styled" = "$output" ]
+  FORCE_COLOR=1 run_cli --help
+  [[ $output != *$'\033'* ]]
+}
