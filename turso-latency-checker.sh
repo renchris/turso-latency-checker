@@ -9,26 +9,70 @@ VERSION=1.1.0
 PROBE_HOST=region.turso.io:8080
 PROBE_URL="http://$PROBE_HOST/"
 
+# One record per option, in long-name order: long|short|hint|default|repeat|summary
+OPTS='help|h|||last_wins|Show this help
+no-color||||last_wins|Disable color
+timeout||<DURATION>|3s|last_wins|Time limit for each probe, such as 5s (default: 3s)
+version|v|||last_wins|Print the version'
+
 OPT_HELP=
 OPT_VERSION=
 OPT_NO_COLOR=
-OPT_TIMEOUT=3
+OPT_TIMEOUT=
 USAGE_REASON=
 USAGE_ERR=
+USAGE_ISSUES=()
+DIE_ROWS=()
+ERR_DIRTY=
 TEMP_DIR=
 PIDS=()
 
-usage_problem() {
-  [ -n "$USAGE_ERR" ] && return 0
-  USAGE_REASON=$1
-  USAGE_ERR=$2
+opt_default() {
+  local long default
+  while IFS='|' read -r long _ _ default _ _; do
+    if [ "$long" = "$1" ]; then
+      printf '%s' "$default"
+      return
+    fi
+  done <<<"$OPTS"
+}
+
+# usage_issue <token> <reason> <row message> <headline when it is the only issue>
+usage_issue() {
+  if [ ${#USAGE_ISSUES[@]} -eq 0 ]; then
+    USAGE_REASON=$2
+    USAGE_ERR=$4
+  fi
+  USAGE_ISSUES+=("$1|$2|$3")
+}
+
+unknown_option() {
+  usage_issue "$1" unknown_option "Unknown option." "Unknown option $1 for $PROG."
+}
+
+unknown_command() {
+  usage_issue "$1" unknown_command "Unknown command." "Unknown command $1 for $PROG."
+}
+
+# bool_arg <the argument as typed> <--name> <variable>: bare or =true is true, =false
+# means no override, anything else is a usage error.
+bool_arg() {
+  case "$1" in
+    "$2" | "$2=true") printf -v "$3" '%s' true ;;
+    "$2=false") printf -v "$3" '%s' false ;;
+    *) usage_issue "$1" invalid_arguments "Use $2=true or $2=false." "Can't use $1. Use $2=true or $2=false." ;;
+  esac
 }
 
 # Accepts 5 | 5s | 2.5s | 500ms, positive only; normalizes to seconds for curl.
 set_timeout() {
-  local value=$1 number=$1 re='^([0-9]+(\.[0-9]+)?|\.[0-9]+)(ms|s)?$'
+  local value=$1 number=$1 re='^([0-9]+(\.[0-9]+)?|\.[0-9]+)(ms|s)?$' advice='Use a positive duration, such as 5s.'
+  if [ -z "$value" ]; then
+    usage_issue --timeout invalid_arguments "$advice" "Can't use --timeout without a value. $advice"
+    return
+  fi
   if ! [[ $value =~ $re ]]; then
-    usage_problem invalid_arguments "Can't use --timeout $value. Use a positive duration, such as 5s."
+    usage_issue "--timeout $value" invalid_arguments "$advice" "Can't use --timeout $value. $advice"
     return
   fi
   case "$value" in
@@ -37,48 +81,74 @@ set_timeout() {
   esac
   case "$number" in
     *[1-9]*) OPT_TIMEOUT=$number ;;
-    *) usage_problem invalid_arguments "Can't use --timeout $value. Use a positive duration, such as 5s." ;;
+    *) usage_issue "--timeout $value" invalid_arguments "$advice" "Can't use --timeout $value. $advice" ;;
   esac
 }
 
-# Records the first usage error and keeps scanning, so -h anywhere still wins.
+# Collects every usage problem and keeps scanning, so -h anywhere still wins.
 parse_args() {
   local arg first=1 positional_only=
+  set_timeout "$(opt_default timeout)"
   while [ $# -gt 0 ]; do
     arg=$1
     shift
     if [ -n "$positional_only" ]; then
-      usage_problem unknown_command "Unknown command $arg for $PROG."
+      unknown_command "$arg"
       continue
     fi
     case "$arg" in
       help)
-        if [ -n "$first" ]; then OPT_HELP=1; else usage_problem unknown_command "Unknown command $arg for $PROG."; fi
+        if [ -n "$first" ]; then OPT_HELP=1; else unknown_command "$arg"; fi
         ;;
       -h | --help) OPT_HELP=1 ;;
       -v | --version) OPT_VERSION=1 ;;
-      --no-color) OPT_NO_COLOR=1 ;;
+      --no-color | --no-color=*) bool_arg "$arg" --no-color OPT_NO_COLOR ;;
       --timeout)
-        case "${1:--}" in
-          -*) usage_problem invalid_arguments "Can't use --timeout without a value. Use a positive duration, such as 5s." ;;
-          *)
-            set_timeout "$1"
-            shift
-            ;;
-        esac
+        if [ $# -eq 0 ]; then
+          set_timeout ''
+        else
+          case "$1" in
+            -*) set_timeout '' ;;
+            *)
+              set_timeout "$1"
+              shift
+              ;;
+          esac
+        fi
         ;;
       --timeout=*) set_timeout "${arg#--timeout=}" ;;
       --) positional_only=1 ;;
-      -*) usage_problem unknown_option "Unknown option $arg for $PROG." ;;
-      *) usage_problem unknown_command "Unknown command $arg for $PROG." ;;
+      -*) unknown_option "$arg" ;;
+      *) unknown_command "$arg" ;;
     esac
     first=
+  done
+  if [ ${#USAGE_ISSUES[@]} -gt 1 ]; then
+    USAGE_REASON=invalid_arguments
+    USAGE_ERR="Can't measure latency. ${#USAGE_ISSUES[@]} inputs are invalid."
+  fi
+}
+
+# The issue rows for a multi-problem usage error: at most 5, then a count.
+usage_rows() {
+  local issue token message shown=0 total=${#USAGE_ISSUES[@]}
+  DIE_ROWS=()
+  [ "$total" -gt 1 ] || return 0
+  for issue in "${USAGE_ISSUES[@]}"; do
+    if [ "$shown" -eq 5 ]; then
+      DIE_ROWS+=("and $((total - shown)) more")
+      return 0
+    fi
+    token=${issue%|*|*}
+    message=${issue##*|}
+    DIE_ROWS+=("$token: $message")
+    shown=$((shown + 1))
   done
 }
 
 # Precedence: --no-color > non-empty NO_COLOR > FORCE_COLOR (0=off, other=on) > a terminal.
 color_for() {
-  [ -n "$OPT_NO_COLOR" ] && return 1
+  [ "$OPT_NO_COLOR" = true ] && return 1
   [ -n "${NO_COLOR:-}" ] && return 1
   if [ -n "${FORCE_COLOR:-}" ]; then
     [ "$FORCE_COLOR" != 0 ]
@@ -128,6 +198,7 @@ errf() {
   shift
   # shellcheck disable=SC2059
   printf "$fmt" "$@" >&2
+  ERR_DIRTY=1
 }
 
 stop_spinner() {
@@ -136,9 +207,15 @@ stop_spinner() {
 
 # die <exit> <reason> <headline> [<recovery-label> <recovery-cmd>]
 die() {
-  local code=$1 headline=$3 label=${4:-} cmd=${5:-}
+  local code=$1 headline=$3 label=${4:-} cmd=${5:-} row
   stop_spinner
+  if [ -n "$ERR_DIRTY" ]; then errf '\n'; fi
   errf '%s%s%s %s\n' "$E_RED" "$GLYPH_ERR" "$E_RESET" "$headline"
+  if [ ${#DIE_ROWS[@]} -gt 0 ]; then
+    for row in "${DIE_ROWS[@]}"; do
+      errf '  %s\n' "$row"
+    done
+  fi
   if [ -n "$label" ]; then
     errf '\n%s:\n    %s%s%s\n' "$label" "$E_CYAN" "$cmd" "$E_RESET"
   fi
@@ -179,16 +256,26 @@ pad_to() {
 }
 # ---- end cli helpers ----
 
+print_options() {
+  local long short hint summary flag name
+  while IFS='|' read -r long short hint _ _ summary; do
+    flag='    '
+    if [ -n "$short" ]; then flag="-$short, "; fi
+    name="--$long"
+    if [ -n "$hint" ]; then name="$name $hint"; fi
+    printf '  %s%-22s%s\n' "$flag" "$name" "$summary"
+  done <<<"$OPTS"
+}
+
 usage() {
   cat <<'USAGE'
 Usage: turso-latency-checker [options]
 Measure latency to every Turso region and show the fastest
 
 Options:
-  -h, --help                Show this help
-      --no-color            Disable color
-      --timeout <DURATION>  Time limit for each probe, such as 5s (default: 3s)
-  -v, --version             Print the version
+USAGE
+  print_options
+  cat <<'USAGE'
 
 Examples:
   Measure every region
@@ -284,7 +371,7 @@ is_gateway() {
   echo " "
 }
 
-# Main script
+main() {
 parse_args "$@"
 resolve_modes
 if [ -n "$OPT_HELP" ]; then
@@ -296,6 +383,7 @@ if [ -n "$OPT_VERSION" ]; then
   exit 0
 fi
 if [ -n "$USAGE_ERR" ]; then
+  usage_rows
   die 2 "$USAGE_REASON" "$USAGE_ERR" "See all options" "$PROG --help"
 fi
 trap cleanup EXIT
@@ -432,3 +520,8 @@ fi
 echo
 
 exit 0
+}
+
+if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
+  main "$@"
+fi
