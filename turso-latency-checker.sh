@@ -240,10 +240,8 @@ make_temp() {
 
 # The directory is mktemp-private, so a fixed dot-name is safe.
 atomic_write() {
-  local dir base
-  dir=$(dirname "$1")
-  base=$(basename "$1")
-  printf '%s\n' "$2" >"$dir/.$base.tmp" && mv -f "$dir/.$base.tmp" "$1"
+  local tmp="${1%/*}/.${1##*/}.tmp"
+  printf '%s\n' "$2" >"$tmp" && mv -f "$tmp" "$1"
 }
 
 # Code points, independent of the locale; every region name is width-1 per point.
@@ -340,22 +338,44 @@ get_location_name() {
   esac
 }
 
-# Function to measure latency for a single location. It runs as a background job
-# and owns its curl, so cancellation stops the probe too.
+# Measures one region. It runs as a background job and owns its curl, so
+# cancellation stops the probe too. A failed probe is recorded, never a latency.
 measure_latency() {
-  local location="$1" exit_code duration
+  local location=$1 rc ms re='^[0-9]+$'
   trap 'kill "$CPID" 2>/dev/null; exit 143' TERM
 
-  curl -s -o /dev/null -w "%{time_total}" --max-time "$OPT_TIMEOUT" -H "fly-prefer-region: $location" "$PROBE_URL" >"$TEMP_DIR/raw/$location" &
+  curl -sS -o /dev/null -w '%{time_total}' --max-time "$OPT_TIMEOUT" -H "fly-prefer-region: $location" "$PROBE_URL" \
+    >"$TEMP_DIR/raw/$location" 2>"$TEMP_DIR/err/$location" &
   CPID=$!
   wait "$CPID"
-  exit_code=$?
+  rc=$?
 
-  if [ "$exit_code" -eq 0 ]; then
-    duration=$(echo "$(cat "$TEMP_DIR/raw/$location") * 1000" | bc | cut -d. -f1)
-    echo "$duration" > "$TEMP_DIR/res/$location"
+  ms=$(LC_ALL=C awk -v t="$(cat "$TEMP_DIR/raw/$location")" 'BEGIN { if (t !~ /^[0-9]*\.?[0-9]+$/) exit 1; printf "%d", t * 1000 }')
+  if [ "$rc" -eq 0 ] && [[ $ms =~ $re ]]; then
+    atomic_write "$TEMP_DIR/res/$location" "$ms"
   else
-    echo "ERROR" > "$TEMP_DIR/res/$location"
+    atomic_write "$TEMP_DIR/res/$location" "ERROR $rc"
+  fi
+}
+
+# A missing file, an empty value or an ERROR value all count as failed.
+classify_results() {
+  local location value
+  OK_ROWS=()
+  FAILED=()
+  for location in "${LOCATIONS[@]}"; do
+    value=
+    if [ -f "$TEMP_DIR/res/$location" ]; then value=$(cat "$TEMP_DIR/res/$location"); fi
+    case "$value" in
+      '' | *[!0-9]*) FAILED+=("$location") ;;
+      *) OK_ROWS+=("$location $value") ;;
+    esac
+  done
+  SORTED_ROWS=()
+  if [ ${#OK_ROWS[@]} -gt 0 ]; then
+    while IFS= read -r value; do
+      SORTED_ROWS+=("$value")
+    done < <(printf '%s\n' "${OK_ROWS[@]}" | sort -n -k2)
   fi
 }
 
@@ -430,28 +450,20 @@ echo "--------------------------------------------------------------------------
 printf "%-6s  %-36s  %11s  %s\n" "ID" "LOCATION" "LATENCY" "GATEWAY"
 echo "--------------------------------------------------------------------------------"
 
-# Get all locations with their latency (excluding errors)
-successful_locations=()
-for location in "${LOCATIONS[@]}"; do
-  if [ -f "$TEMP_DIR/res/$location" ] && [ "$(cat "$TEMP_DIR/res/$location")" != "ERROR" ]; then
-    successful_locations+=("$location $(cat "$TEMP_DIR/res/$location")")
-  fi
-done
-
-# Sort by latency (second field)
-sorted_locations=()
-while IFS= read -r entry; do
-  sorted_locations+=("$entry")
-done < <(printf '%s\n' "${successful_locations[@]}" | sort -n -k2)
+classify_results
 
 # Get the fastest location
-fastest_location=$(echo "${sorted_locations[0]}" | awk '{print $1}')
-fastest_latency=$(echo "${sorted_locations[0]}" | awk '{print $2}')
+fastest_location=
+fastest_latency=
+if [ ${#SORTED_ROWS[@]} -gt 0 ]; then
+  fastest_location=${SORTED_ROWS[0]% *}
+  fastest_latency=${SORTED_ROWS[0]#* }
+fi
 
 # Print sorted results
-for entry in "${sorted_locations[@]}"; do
-  location=$(echo "$entry" | awk '{print $1}')
-  latency=$(echo "$entry" | awk '{print $2}')
+for entry in ${SORTED_ROWS[@]+"${SORTED_ROWS[@]}"}; do
+  location=${entry% *}
+  latency=${entry#* }
   gateway_mark=$(is_gateway "$location")
   
   # Make sure location name is not too long
@@ -482,28 +494,16 @@ for entry in "${sorted_locations[@]}"; do
   fi
 done
 
-# List failed locations
-failed_locations=()
-for location in "${LOCATIONS[@]}"; do
-  if [ -f "$TEMP_DIR/res/$location" ] && [ "$(cat "$TEMP_DIR/res/$location")" = "ERROR" ]; then
-    failed_locations+=("$location")
-  fi
-done
-
-if [ ${#failed_locations[@]} -gt 0 ]; then
+if [ ${#FAILED[@]} -gt 0 ]; then
   echo
   echo "Failed to connect to these regions:"
-  for location in "${failed_locations[@]}"; do
+  for location in "${FAILED[@]}"; do
     echo "- $location ($(get_location_name "$location"))"
   done
 fi
 
 # Show fastest region
-if [ ${#sorted_locations[@]} -gt 0 ]; then
-  fastest_entry="${sorted_locations[0]}"
-  fastest_location=$(echo "$fastest_entry" | awk '{print $1}')
-  fastest_latency=$(echo "$fastest_entry" | awk '{print $2}')
-  
+if [ -n "$fastest_location" ]; then
   # Check if it's a gateway
   gateway_info=""
   if [ "$(is_gateway "$fastest_location")" = "✓" ]; then

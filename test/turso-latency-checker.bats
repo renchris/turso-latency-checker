@@ -249,3 +249,30 @@ printed_commands() {
   [ "$checked" -ge 2 ]
   ! grep -nE '"curl -[a-zA-Z]' "$SCRIPT"
 }
+
+@test "B1-T1 probe: curl failure is reported as failed, never as a latency" {
+  export STUB_CURL_FAIL="bog:28 gru:7"
+  run_cli_1x
+  [ -s "$STUB_CURL_LOG" ]
+  ! printf '%s\n' "$output" | grep -qE '^(bog|gru) '
+  printf '%s\n' "$output" | grep -q '^- bog '
+  printf '%s\n' "$output" | grep -q '^- gru '
+  [ "$(table_rows | wc -l | tr -d ' ')" -eq 33 ]
+}
+
+@test "B1-T2 probe: sub-millisecond time renders as 0ms, never blank" {
+  export STUB_CURL_TIME=0.000500
+  run_cli_1x
+  [ -s "$STUB_CURL_LOG" ]
+  [ "$(table_rows | wc -l | tr -d ' ')" -eq 35 ]
+  [ "$(table_rows | grep -cE ' 0ms( |$)')" -eq 35 ]
+}
+
+@test "B1-T3 probe: works when bc is missing" {
+  export STUB_CURL_TIME=0.000500
+  PATH="$BATS_TEST_DIRNAME/fixtures/nobc:$PATH"
+  run_cli_1x
+  [ "$(table_rows | wc -l | tr -d ' ')" -eq 35 ]
+  [ "$(table_rows | grep -cE ' 0ms( |$)')" -eq 35 ]
+  ! grep -qw bc "$SCRIPT"
+}
