@@ -280,8 +280,8 @@ printed_commands() {
 @test "B2-T1 wait: bounded when a probe hangs" {
   export STUB_CURL_HANG=ams
   SECONDS=0
-  TURSO_LATENCY_COMPAT_TABLE=1 run --separate-stderr timeout 20 "$TLC_BASH" "$SCRIPT" --timeout 1
-  [ "$SECONDS" -lt 15 ]
+  TURSO_LATENCY_COMPAT_TABLE=1 run --separate-stderr timeout 40 "$TLC_BASH" "$SCRIPT" --timeout 1
+  [ "$SECONDS" -lt 35 ]
   printf '%s\n' "$output" | grep -q '^- ams (Amsterdam, Netherlands): no result within'
 }
 
@@ -389,4 +389,19 @@ printed_commands() {
   printf '%s\n' "$output" | grep -qE '^ams .* yes$'
   printf '%s\n' "$output" | grep -qE '^arn .* no$'
   [[ $output != *✓* ]]
+}
+
+@test "B5-T1 retry: a transient failure is retried once and the second timing is kept" {
+  export STUB_CURL_FAIL_ONCE="ams:7" STUB_CURL_TIMES="ams:0.020"
+  run_cli_1x
+  printf '%s\n' "$output" | grep -qE '^ams .* 20ms '
+  [ "$(grep -c '^ams ' "$STUB_CURL_LOG")" -eq 2 ]
+  [ "$(printf '%s\n' "$stderr" | grep -c '^Retrying automatically\.\.\.$')" -eq 1 ]
+
+  : >"$STUB_CURL_LOG"
+  unset STUB_CURL_FAIL_ONCE STUB_CURL_TIMES
+  export STUB_CURL_FAIL="arn:3"
+  run_cli_1x
+  [ "$(grep -c '^arn ' "$STUB_CURL_LOG")" -eq 1 ]
+  printf '%s\n' "$output" | grep -q '^- arn '
 }

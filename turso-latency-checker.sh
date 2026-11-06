@@ -213,11 +213,12 @@ errf() {
 SPINNER_FRAMES=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
 SPINNER_DRAWN=
 SPINNER_INDEX=0
+SPINNER_LABEL=Measuring
 
 # draw_spinner <finished> <total>: one frame on stderr, only when animating.
 draw_spinner() {
   [ -n "$ANIMATE" ] || return 0
-  printf '\r%s Measuring%s %d of %d ' "${SPINNER_FRAMES[$SPINNER_INDEX]}" "$ELLIPSIS" "$1" "$2" >&2
+  printf '\r%s %s%s %d of %d ' "${SPINNER_FRAMES[$SPINNER_INDEX]}" "$SPINNER_LABEL" "$ELLIPSIS" "$1" "$2" >&2
   SPINNER_INDEX=$(((SPINNER_INDEX + 1) % ${#SPINNER_FRAMES[@]}))
   SPINNER_DRAWN=1
 }
@@ -309,8 +310,9 @@ Examples:
     turso-latency-checker --timeout 10s
 
 Notes:
-  Each region gets one plain-HTTP GET to http://region.turso.io:8080/ with a
-  fly-prefer-region header; all regions run in parallel.
+  Each region gets a plain-HTTP GET to http://region.turso.io:8080/ with a
+  fly-prefer-region header. All regions run in parallel, and a failed probe
+  is retried once.
   Results go to stdout; progress goes to stderr.
   Honors NO_COLOR, FORCE_COLOR, CI, and TURSO_LATENCY_ACCESSIBLE=1.
 
@@ -368,15 +370,29 @@ get_location_name() {
 
 # Measures one region. It runs as a background job and owns its curl, so
 # cancellation stops the probe too. A failed probe is recorded, never a latency.
+# A transient failure is retried once, and only the last attempt's timing counts.
 measure_latency() {
-  local location=$1 rc ms re='^[0-9]+$'
+  local location=$1 rc ms attempt=1 re='^[0-9]+$'
   trap 'kill "$CPID" 2>/dev/null; exit 143' TERM
 
+  while :; do
   curl -sS -o /dev/null -w '%{time_total}' --max-time "$OPT_TIMEOUT" -H "fly-prefer-region: $location" "$PROBE_URL" \
     >"$TEMP_DIR/raw/$location" 2>"$TEMP_DIR/err/$location" &
   CPID=$!
   wait "$CPID"
   rc=$?
+  if [ "$attempt" -eq 1 ]; then
+    case "$rc" in
+      6 | 7 | 28 | 35 | 52 | 56)
+        : >"$TEMP_DIR/.retrying"
+        attempt=2
+        sleep 0.5
+        continue
+        ;;
+    esac
+  fi
+  break
+  done
 
   ms=$(LC_ALL=C awk -v t="$(cat "$TEMP_DIR/raw/$location")" 'BEGIN { if (t !~ /^[0-9]*\.?[0-9]+$/) exit 1; printf "%d", t * 1000 }')
   if [ "$rc" -eq 0 ] && [[ $ms =~ $re ]]; then
@@ -401,7 +417,7 @@ probe_deadline_seconds() {
 
 # Waits for every probe, up to the deadline, then stops whatever is left.
 wait_for_probes() {
-  local deadline pid alive location finished
+  local deadline pid alive location finished retry_noted=
   deadline=$((SECONDS + $(probe_deadline_seconds)))
   while :; do
     alive=0
@@ -412,6 +428,14 @@ wait_for_probes() {
     for location in "${LOCATIONS[@]}"; do
       if [ -f "$TEMP_DIR/res/$location" ]; then finished=$((finished + 1)); fi
     done
+    if [ -z "$retry_noted" ] && [ -e "$TEMP_DIR/.retrying" ]; then
+      retry_noted=1
+      if [ -n "$ANIMATE" ]; then
+        SPINNER_LABEL='Retrying automatically'
+      else
+        errf 'Retrying automatically%s\n' "$ELLIPSIS"
+      fi
+    fi
     draw_spinner "$finished" "${#LOCATIONS[@]}"
     if [ "$alive" -eq 0 ]; then break; fi
     if [ "$SECONDS" -ge "$deadline" ]; then
