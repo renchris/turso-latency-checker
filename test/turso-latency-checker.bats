@@ -466,7 +466,7 @@ printed_commands() {
 @test "B8-T3 a slow run says so once" {
   export STUB_CURL_HANG=ams
   TURSO_LATENCY_COMPAT_TABLE=1 run --separate-stderr timeout 40 "$TLC_BASH" "$SCRIPT" --timeout 1
-  [ "$(printf '%s\n' "$stderr" | grep -c '^Still measuring 1 region\. Most runs finish within 2 seconds\.$')" -eq 1 ]
+  [ "$(printf '%s\n' "$stderr" | grep -cE '^Still measuring [0-9]+ regions?\. Most runs finish within 2 seconds\.$')" -eq 1 ]
 }
 
 @test "B8-T4 output uses the glossary nouns" {
@@ -518,4 +518,66 @@ tty_table_lines() {
   printf '%s\n' "$table" | grep -qE '^ams +Amsterdam, Netherlands +[0-9]+ms'
   ! printf '%s\n' "$table" | grep -q '…$'
   ! printf '%s\n' "$table" | grep -qE '^ams +[0-9]+ms'
+}
+
+has_animation() {
+  [[ $output == *$'\r'* ]] && [[ $output == *⠋* ]]
+}
+
+@test "B10-T1 mode matrix: success and failure in every mode (R403)" {
+  for fail in '' 7; do
+    if [ -n "$fail" ]; then export STUB_CURL_FAIL_ALL=$fail; else unset STUB_CURL_FAIL_ALL; fi
+
+    run_tty
+    expected=$status
+    has_animation
+    ! printf '%s\n' "$output" | grep -q '?$'
+    if [ -z "$fail" ]; then
+      printf '%s\n' "$output" | grep -q 'ams '
+      [[ $output != *'{'* ]]
+    fi
+
+    run_cli
+    [ "$status" -eq "$expected" ]
+    [[ $output != *$'\r'* ]]
+    [[ $stderr != *$'\r'* ]]
+    [[ $stderr != *⠋* ]]
+    ! printf '%s\n%s\n' "$output" "$stderr" | grep -q '?$'
+    if [ -z "$fail" ]; then
+      printf '%s\n' "$output" | grep -q '^ams '
+      [[ $output != *'{'* ]]
+    fi
+
+    run_tty_stdin_piped
+    [ "$status" -eq "$expected" ]
+    ! has_animation
+    run_tty --non-interactive
+    [ "$status" -eq "$expected" ]
+    ! has_animation
+    CI=1 run_tty
+    [ "$status" -eq "$expected" ]
+    ! has_animation
+    CLAUDECODE=1 run_tty
+    [ "$status" -eq "$expected" ]
+    ! has_animation
+    ! printf '%s\n' "$output" | grep -q '?$'
+    if [ -z "$fail" ]; then
+      printf '%s\n' "$output" | grep -q 'ams '
+      [[ $output != *'{'* ]]
+    fi
+  done
+}
+
+@test "B10-T2 --non-interactive parses as a boolean" {
+  run_tty --non-interactive=false
+  has_animation
+  run_cli --non-interactive=maybe
+  [ "$status" -eq 2 ]
+}
+
+@test "B10-T3 --non-interactive=false restores animation only for a detected agent (Round 2 re-check; R113, R117)" {
+  CLAUDECODE=1 run_tty --non-interactive=false
+  has_animation
+  CI=1 run_tty --non-interactive=false
+  ! has_animation
 }

@@ -12,12 +12,14 @@ PROBE_URL="http://$PROBE_HOST/"
 # One record per option, in long-name order: long|short|hint|default|repeat|summary
 OPTS='help|h|||last_wins|Show this help
 no-color||||last_wins|Disable color
+non-interactive||||last_wins|Never animate progress (the CLI never prompts)
 timeout||<DURATION>|3s|last_wins|Time limit for each probe, such as 5s (default: 3s)
 version|v|||last_wins|Print the version'
 
 OPT_HELP=
 OPT_VERSION=
 OPT_NO_COLOR=
+OPT_NON_INTERACTIVE=
 OPT_TIMEOUT=
 USAGE_REASON=
 USAGE_ERR=
@@ -103,6 +105,7 @@ parse_args() {
       -h | --help) OPT_HELP=1 ;;
       -v | --version) OPT_VERSION=1 ;;
       --no-color | --no-color=*) bool_arg "$arg" --no-color OPT_NO_COLOR ;;
+      --non-interactive | --non-interactive=*) bool_arg "$arg" --non-interactive OPT_NON_INTERACTIVE ;;
       --timeout)
         if [ $# -eq 0 ]; then
           set_timeout ''
@@ -168,6 +171,7 @@ resolve_modes() {
   TTY_ERR=
   RICH_OUT=
   RICH_ERR=
+  INTERACTIVE=
   ANIMATE=
   ACCESSIBLE=
   BOLD=
@@ -190,8 +194,13 @@ resolve_modes() {
   if [ -n "$TTY_OUT" ] && [ "${TERM:-}" != dumb ]; then RICH_OUT=1; fi
   if [ -n "$TTY_ERR" ] && [ "${TERM:-}" != dumb ] && [ -z "${TURSO_LATENCY_ACCESSIBLE:-}" ]; then RICH_ERR=1; fi
   if [ -n "${TURSO_LATENCY_ACCESSIBLE:-}" ]; then ACCESSIBLE=1; fi
+  # --non-interactive=false restores animation for a detected agent, and for nothing else.
+  if [ -t 0 ] && [ -t 2 ] && [ -z "${CI:-}" ] && [ "$OPT_NON_INTERACTIVE" != true ] &&
+    { [ -z "${CLAUDECODE:-}" ] || [ "$OPT_NON_INTERACTIVE" = false ]; }; then
+    INTERACTIVE=1
+  fi
   # Not gated on color: turning color off removes only color.
-  if [ -n "$RICH_ERR" ] && [ -t 0 ] && [ -z "${CI:-}" ]; then ANIMATE=1; fi
+  if [ -n "$RICH_ERR" ] && [ -n "$INTERACTIVE" ]; then ANIMATE=1; fi
   if [ -n "$RICH_OUT" ] && color_for 1; then
     BOLD=$'\033[1m'
     RESET=$'\033[0m'
@@ -369,7 +378,7 @@ Notes:
   fly-prefer-region header. All regions run in parallel, and a failed probe
   is retried once.
   Results go to stdout; progress goes to stderr.
-  Honors NO_COLOR, FORCE_COLOR, CI, and TURSO_LATENCY_ACCESSIBLE=1.
+  Honors NO_COLOR, FORCE_COLOR, CI, CLAUDECODE, and TURSO_LATENCY_ACCESSIBLE=1.
 
 Learn more: https://github.com/renchris/turso-latency-checker#readme
 USAGE
