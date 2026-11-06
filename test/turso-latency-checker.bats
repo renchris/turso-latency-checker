@@ -405,3 +405,20 @@ printed_commands() {
   [ "$(grep -c '^arn ' "$STUB_CURL_LOG")" -eq 1 ]
   printf '%s\n' "$output" | grep -q '^- arn '
 }
+
+@test "B6-T1 failures: each failed region names its cause" {
+  export STUB_CURL_FAIL="bog:28 gru:7 qro:6 scl:56"
+  run_cli_1x
+  printf '%s\n' "$output" | grep -Fxq "Couldn't reach 4 regions via region.turso.io:8080"
+  printf '%s\n' "$output" | grep -q '^- bog (Bogotá, Colombia): timed out after 3s'
+  printf '%s\n' "$output" | grep -q '^- gru (São Paulo, Brazil): connection refused'
+  printf '%s\n' "$output" | grep -q '^- qro (Querétaro, Mexico): DNS lookup failed'
+  printf '%s\n' "$output" | grep -q '^- scl (Santiago, Chile): curl exit 56: Recv failure'
+  [[ $stderr == *"Measured 31 of 35 regions. 4 failed."* ]]
+}
+
+@test "B6-T2 copy: no banner exclamation, all-caps heading or \"Failed to connect\"" {
+  ! grep -nE 'Complete!|RESULTS \(|Failed to connect|=====' "$SCRIPT"
+  run_cli_1x
+  [ "${stderr_lines[${#stderr_lines[@]}-1]}" = "Measured 35 regions." ]
+}

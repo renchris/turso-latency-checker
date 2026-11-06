@@ -470,6 +470,26 @@ classify_results() {
   fi
 }
 
+# failure_cause <location>: the reason a region has no latency. Never a guess.
+failure_cause() {
+  local result rc detail
+  if [ ! -f "$TEMP_DIR/res/$1" ]; then
+    printf 'no result within %ss' "$(probe_deadline_seconds)"
+    return
+  fi
+  result=$(cat "$TEMP_DIR/res/$1")
+  rc=${result#ERROR }
+  case "$rc" in
+    28) printf 'timed out after %ss' "$OPT_TIMEOUT" ;;
+    6) printf 'DNS lookup failed' ;;
+    7) printf 'connection refused' ;;
+    *)
+      detail=$(sed -n '1s/^curl: ([0-9]*) //p' "$TEMP_DIR/err/$1")
+      printf 'curl exit %s%s' "$rc" "${detail:+: $detail}"
+      ;;
+  esac
+}
+
 is_gateway() {
   local gateway
   for gateway in "${GATEWAY_REGIONS[@]}"; do
@@ -516,6 +536,12 @@ errf 'Measuring latency to %d Turso regions via %s%s\n' "${#LOCATIONS[@]}" "$PRO
 
 start_probes
 wait_for_probes
+classify_results
+if [ ${#FAILED[@]} -eq 0 ]; then
+  errf 'Measured %d regions.\n' "${#LOCATIONS[@]}"
+else
+  errf 'Measured %d of %d regions. %d failed.\n' "${#OK_ROWS[@]}" "${#LOCATIONS[@]}" "${#FAILED[@]}"
+fi
 
 if [ -n "$TTY_OUT" ]; then
   outf '%s\n' "--------------------------------------------------------------------------------"
@@ -524,8 +550,6 @@ outf "%-6s  %-36s  %11s  %s\n" "ID" "LOCATION" "LATENCY" "GATEWAY"
 if [ -n "$TTY_OUT" ]; then
   outf '%s\n' "--------------------------------------------------------------------------------"
 fi
-
-classify_results
 
 # Get the fastest region
 fastest_location=
@@ -545,13 +569,9 @@ done
 
 if [ ${#FAILED[@]} -gt 0 ]; then
   outf '\n'
-  outf 'Failed to connect to these regions:\n'
+  outf "Couldn't reach %d regions via %s\n" "${#FAILED[@]}" "$PROBE_HOST"
   for location in "${FAILED[@]}"; do
-    if [ -f "$TEMP_DIR/res/$location" ]; then
-      outf '%s\n' "- $location ($(get_location_name "$location"))"
-    else
-      outf '%s\n' "- $location ($(get_location_name "$location")): no result within $(probe_deadline_seconds)s"
-    fi
+    outf '%s\n' "- $location ($(get_location_name "$location")): $(failure_cause "$location")"
   done
 fi
 
