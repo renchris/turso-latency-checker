@@ -218,9 +218,13 @@ resolve_modes() {
     if [ -n "$RICH_ERR" ]; then E_CYAN=$'\033[36m'; fi
   fi
   GLYPH_ERR='Error:'
+  GLYPH_OK=
+  GUTTER=
   ELLIPSIS='...'
   if [ -n "$RICH_ERR" ]; then
     GLYPH_ERR='✗'
+    GLYPH_OK='✓ '
+    GUTTER='  '
     ELLIPSIS='…'
   fi
 }
@@ -259,6 +263,11 @@ stop_spinner() {
     printf '\r\033[K' >&2
     SPINNER_DRAWN=
   fi
+}
+
+# row <label> <value>: the one layout for a labeled detail row on stderr.
+row() {
+  errf '  %-16s%s\n' "$1" "$2"
 }
 
 # die <exit> <reason> <headline> [<recovery-label> <recovery-cmd>]
@@ -572,13 +581,13 @@ wait_for_probes() {
       if [ -n "$ANIMATE" ]; then
         SPINNER_LABEL='Retrying automatically'
       else
-        errf 'Retrying automatically%s\n' "$ELLIPSIS"
+        errf '%sRetrying automatically%s\n' "$GUTTER" "$ELLIPSIS"
       fi
     fi
     if [ -z "$still_noted" ] && [ "$alive" -gt 0 ] && [ "$SECONDS" -gt "$still_after" ]; then
       still_noted=1
       stop_spinner
-      errf 'Still measuring %s. Most runs finish within %s.\n' \
+      errf '%sStill measuring %s. Most runs finish within %s.\n' "$GUTTER" \
         "$(plural $((${#LOCATIONS[@]} - finished)) region regions)" "$(plural "$usual_seconds" second seconds)"
     fi
     draw_spinner "$finished" "${#LOCATIONS[@]}"
@@ -696,15 +705,15 @@ trap 'exit 129' HUP
 trap 'exit 0' PIPE
 make_temp
 
-errf 'Measuring latency to %d Turso regions via %s%s\n' "${#LOCATIONS[@]}" "$PROBE_HOST" "$ELLIPSIS"
+errf '%sMeasuring latency to %d Turso regions via %s%s\n' "$GUTTER" "${#LOCATIONS[@]}" "$PROBE_HOST" "$ELLIPSIS"
 
 start_probes
 wait_for_probes
 classify_results
 if [ ${#FAILED[@]} -eq 0 ]; then
-  errf 'Measured %s.\n' "$(plural "${#LOCATIONS[@]}" region regions)"
+  errf '%sMeasured %s.\n' "$GLYPH_OK" "$(plural "${#LOCATIONS[@]}" region regions)"
 else
-  errf 'Measured %d of %d regions. %d failed.\n' "${#OK_ROWS[@]}" "${#LOCATIONS[@]}" "${#FAILED[@]}"
+  errf '%sMeasured %d of %d regions. %d failed.\n' "$GUTTER" "${#OK_ROWS[@]}" "${#LOCATIONS[@]}" "${#FAILED[@]}"
 fi
 
 print_header

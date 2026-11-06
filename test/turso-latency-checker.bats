@@ -607,3 +607,14 @@ has_animation() {
   grep -q '^cause_for() {' "$SCRIPT"
   [ "$(grep -c 'time_total} %{http_code}' "$SCRIPT")" -eq 1 ]
 }
+
+@test "B14-T1 a rich stderr uses the gutter; a plain one reads as sentences" {
+  run_tty
+  [[ $output == *"✓ Measured 35 regions."* ]]
+  printf '%s\n' "$output" | grep -q '^  Measuring latency to 35 Turso regions'
+  run_cli
+  [[ $stderr != *✓* ]]
+  [ "${stderr_lines[${#stderr_lines[@]}-1]}" = "Measured 35 regions." ]
+  TURSO_LATENCY_ACCESSIBLE=1 run_tty
+  [[ $output != *✓* ]]
+}
