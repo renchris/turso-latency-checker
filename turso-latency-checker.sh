@@ -358,6 +358,47 @@ measure_latency() {
   fi
 }
 
+start_probes() {
+  local location
+  for location in "${LOCATIONS[@]}"; do
+    measure_latency "$location" &
+    PIDS+=($!)
+  done
+}
+
+# The longest a run can take, in whole seconds: 2 attempts, the backoff and 2 seconds of slack.
+probe_deadline_seconds() {
+  LC_ALL=C awk -v t="$OPT_TIMEOUT" 'BEGIN { d = 2 * t + 2.5; printf "%d", (d == int(d)) ? d : int(d) + 1 }'
+}
+
+# Waits for every probe, up to the deadline, then stops whatever is left.
+wait_for_probes() {
+  local deadline pid alive spinner_frames i=0 location finished
+  deadline=$((SECONDS + $(probe_deadline_seconds)))
+  spinner_frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+  while :; do
+    alive=0
+    for pid in "${PIDS[@]}"; do
+      if kill -0 "$pid" 2>/dev/null; then alive=$((alive + 1)); fi
+    done
+    finished=0
+    for location in "${LOCATIONS[@]}"; do
+      if [ -f "$TEMP_DIR/res/$location" ]; then finished=$((finished + 1)); fi
+    done
+    echo -ne "\rRunning tests: ${spinner_frames[$i]} $finished of ${#LOCATIONS[@]} "
+    if [ "$alive" -eq 0 ]; then break; fi
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      kill "${PIDS[@]}" 2>/dev/null
+      break
+    fi
+    i=$(((i + 1) % ${#spinner_frames[@]}))
+    sleep 0.1
+  done
+  wait "${PIDS[@]}" 2>/dev/null
+  PIDS=()
+  echo -e "\rRunning tests: Complete!          "
+}
+
 # A missing file, an empty value or an ERROR value all count as failed.
 classify_results() {
   local location value
@@ -418,30 +459,8 @@ echo "====================="
 echo "Measuring latency to all Turso locations..."
 echo
 
-# Start the latency tests in the background
-for location in "${LOCATIONS[@]}"; do
-  measure_latency "$location" &
-  PIDS+=($!)
-done
-
-# Show a spinner animation as progress indicator
-echo -n "Running tests: "
-spinner=( '⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏' )
-total=${#LOCATIONS[@]}
-i=0
-while true; do
-  completed=$(ls "$TEMP_DIR/res" | wc -l)
-  echo -ne "\rRunning tests: ${spinner[$i]} "
-  
-  if [ "$completed" -eq "$total" ]; then
-    echo -e "\rRunning tests: Complete!          "
-    break
-  fi
-  
-  i=$(( (i+1) % ${#spinner[@]} ))
-  sleep 0.1
-done
-
+start_probes
+wait_for_probes
 echo
 
 # All tests are now complete - collect and sort the results
@@ -498,7 +517,11 @@ if [ ${#FAILED[@]} -gt 0 ]; then
   echo
   echo "Failed to connect to these regions:"
   for location in "${FAILED[@]}"; do
-    echo "- $location ($(get_location_name "$location"))"
+    if [ -f "$TEMP_DIR/res/$location" ]; then
+      echo "- $location ($(get_location_name "$location"))"
+    else
+      echo "- $location ($(get_location_name "$location")): no result within $(probe_deadline_seconds)s"
+    fi
   done
 fi
 

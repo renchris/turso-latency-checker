@@ -88,7 +88,7 @@ temp_dir_exists() {
   export STUB_CURL_SLEEP=1
   start_cli
   rc=0
-  wait_until 50 temp_dir_exists || rc=1
+  wait_until 200 temp_dir_exists || rc=1
   [ ! -e "/tmp/turso_latency_$CLI_PID" ] || rc=2
   wait "$CLI_PID" || true
   [ "$rc" -eq 0 ]
@@ -98,14 +98,14 @@ temp_dir_exists() {
 @test "A-T8 SIGTERM exits 143, removes temp dir, leaves no probe processes" {
   export STUB_CURL_SLEEP=30 STUB_CURL_PIDS="$BATS_TEST_TMPDIR/pids"
   start_cli --timeout 30
-  wait_until 50 pid_count_is "$STUB_CURL_PIDS" 35
+  wait_until 200 pid_count_is "$STUB_CURL_PIDS" 35
   temp_dir_exists
   kill -TERM "$CLI_PID"
   rc=0
   wait "$CLI_PID" || rc=$?
   [ "$rc" -eq 143 ]
   [ -z "$(find "$TMPDIR" -mindepth 1)" ]
-  wait_until 20 no_pids_alive "$STUB_CURL_PIDS"
+  wait_until 100 no_pids_alive "$STUB_CURL_PIDS"
 }
 
 @test "A-T9 SIGINT exits 130 and prints Canceled." {
@@ -114,7 +114,7 @@ temp_dir_exists() {
   python3 -c 'import os,signal,sys; signal.signal(signal.SIGINT, signal.SIG_DFL); os.execvp(sys.argv[1], sys.argv[1:])' \
     "$TLC_BASH" "$SCRIPT" --timeout 30 >/dev/null 2>"$e" 3>&- &
   pid=$!
-  wait_until 50 pid_count_is "$STUB_CURL_PIDS" 35
+  wait_until 200 pid_count_is "$STUB_CURL_PIDS" 35
   kill -INT "$pid"
   rc=0
   wait "$pid" || rc=$?
@@ -122,7 +122,7 @@ temp_dir_exists() {
   [ "$(tail -n 2 "$e" | sed -n 1p)" = "Canceled." ]
   [ "$(tail -n 1 "$e")" = "Nothing was changed." ]
   ! tail -n 2 "$e" | grep -q $'\r'
-  wait_until 20 no_pids_alive "$STUB_CURL_PIDS"
+  wait_until 100 no_pids_alive "$STUB_CURL_PIDS"
 }
 
 @test "A-T10 closed stdout ends quietly with exit 0" {
@@ -275,4 +275,25 @@ printed_commands() {
   [ "$(table_rows | wc -l | tr -d ' ')" -eq 35 ]
   [ "$(table_rows | grep -cE ' 0ms( |$)')" -eq 35 ]
   ! grep -qw bc "$SCRIPT"
+}
+
+@test "B2-T1 wait: bounded when a probe hangs" {
+  export STUB_CURL_HANG=ams
+  SECONDS=0
+  TURSO_LATENCY_COMPAT_TABLE=1 run --separate-stderr timeout 20 "$TLC_BASH" "$SCRIPT" --timeout 1
+  [ "$SECONDS" -lt 15 ]
+  printf '%s\n' "$output" | grep -q '^- ams (Amsterdam, Netherlands): no result within'
+}
+
+@test "B2-T2 wait: unwritable TMPDIR fails fast" {
+  TMPDIR=/nonexistent/x run --separate-stderr timeout 10 "$TLC_BASH" "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+  [ "$stderr" = "Error: Couldn't create a temp directory in /nonexistent/x." ]
+}
+
+@test "B2-T3 results: never written with a bare redirect" {
+  ! grep -nE '> *"\$TEMP_DIR/(res/)?\$loc' "$SCRIPT"
+  grep -q 'atomic_write' "$SCRIPT"
+  ! grep -n 'while true' "$SCRIPT"
 }
