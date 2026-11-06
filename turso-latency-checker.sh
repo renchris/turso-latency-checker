@@ -162,6 +162,8 @@ resolve_modes() {
   TTY_ERR=
   RICH_OUT=
   RICH_ERR=
+  ANIMATE=
+  ACCESSIBLE=
   BOLD=
   RESET=
   E_RED=
@@ -171,6 +173,9 @@ resolve_modes() {
   if [ -t 2 ]; then TTY_ERR=1; fi
   if [ -n "$TTY_OUT" ] && [ "${TERM:-}" != dumb ]; then RICH_OUT=1; fi
   if [ -n "$TTY_ERR" ] && [ "${TERM:-}" != dumb ] && [ -z "${TURSO_LATENCY_ACCESSIBLE:-}" ]; then RICH_ERR=1; fi
+  if [ -n "${TURSO_LATENCY_ACCESSIBLE:-}" ]; then ACCESSIBLE=1; fi
+  # Not gated on color: turning color off removes only color.
+  if [ -n "$RICH_ERR" ] && [ -t 0 ] && [ -z "${CI:-}" ]; then ANIMATE=1; fi
   if [ -n "$RICH_OUT" ] && color_for 1; then
     BOLD=$'\033[1m'
     RESET=$'\033[0m'
@@ -205,8 +210,23 @@ errf() {
   ERR_DIRTY=1
 }
 
+SPINNER_FRAMES=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+SPINNER_DRAWN=
+SPINNER_INDEX=0
+
+# draw_spinner <finished> <total>: one frame on stderr, only when animating.
+draw_spinner() {
+  [ -n "$ANIMATE" ] || return 0
+  printf '\r%s Measuring%s %d of %d ' "${SPINNER_FRAMES[$SPINNER_INDEX]}" "$ELLIPSIS" "$1" "$2" >&2
+  SPINNER_INDEX=$(((SPINNER_INDEX + 1) % ${#SPINNER_FRAMES[@]}))
+  SPINNER_DRAWN=1
+}
+
 stop_spinner() {
-  :
+  if [ -n "$SPINNER_DRAWN" ]; then
+    printf '\r\033[K' >&2
+    SPINNER_DRAWN=
+  fi
 }
 
 # die <exit> <reason> <headline> [<recovery-label> <recovery-cmd>]
@@ -221,7 +241,7 @@ die() {
     done
   fi
   if [ -n "$label" ]; then
-    errf '\n%s:\n    %s%s%s\n' "$label" "$E_CYAN" "$cmd" "$E_RESET"
+    errf '\n%s:\n    %s%s%s\n' "$label" "$E_CYAN" "$cmd" "${E_CYAN:+$E_RESET}"
   fi
   exit "$code"
 }
@@ -250,7 +270,9 @@ atomic_write() {
 
 # Code points, independent of the locale; every region name is width-1 per point.
 display_width() {
-  printf %s "$1" | LC_ALL=C tr -d '\200-\277' | wc -c | tr -d ' '
+  local LC_ALL=C bare
+  bare=${1//[$'\200'-$'\277']/}
+  printf '%s' "${#bare}"
 }
 
 pad_to() {
@@ -289,6 +311,8 @@ Examples:
 Notes:
   Each region gets one plain-HTTP GET to http://region.turso.io:8080/ with a
   fly-prefer-region header; all regions run in parallel.
+  Results go to stdout; progress goes to stderr.
+  Honors NO_COLOR, FORCE_COLOR, CI, and TURSO_LATENCY_ACCESSIBLE=1.
 
 Learn more: https://github.com/renchris/turso-latency-checker#readme
 USAGE
@@ -377,13 +401,18 @@ probe_deadline_seconds() {
 
 # Waits for every probe, up to the deadline, then stops whatever is left.
 wait_for_probes() {
-  local deadline pid alive
+  local deadline pid alive location finished
   deadline=$((SECONDS + $(probe_deadline_seconds)))
   while :; do
     alive=0
     for pid in "${PIDS[@]}"; do
       if kill -0 "$pid" 2>/dev/null; then alive=$((alive + 1)); fi
     done
+    finished=0
+    for location in "${LOCATIONS[@]}"; do
+      if [ -f "$TEMP_DIR/res/$location" ]; then finished=$((finished + 1)); fi
+    done
+    draw_spinner "$finished" "${#LOCATIONS[@]}"
     if [ "$alive" -eq 0 ]; then break; fi
     if [ "$SECONDS" -ge "$deadline" ]; then
       kill "${PIDS[@]}" 2>/dev/null
@@ -393,6 +422,7 @@ wait_for_probes() {
   done
   wait "${PIDS[@]}" 2>/dev/null
   PIDS=()
+  stop_spinner
 }
 
 # A missing file, an empty value or an ERROR value all count as failed.
@@ -402,7 +432,7 @@ classify_results() {
   FAILED=()
   for location in "${LOCATIONS[@]}"; do
     value=
-    if [ -f "$TEMP_DIR/res/$location" ]; then value=$(cat "$TEMP_DIR/res/$location"); fi
+    if [ -f "$TEMP_DIR/res/$location" ]; then read -r value <"$TEMP_DIR/res/$location"; fi
     case "$value" in
       '' | *[!0-9]*) FAILED+=("$location") ;;
       *) OK_ROWS+=("$location $value") ;;
@@ -416,16 +446,24 @@ classify_results() {
   fi
 }
 
-# Check if a location is a gateway
 is_gateway() {
-  local location="$1"
+  local gateway
   for gateway in "${GATEWAY_REGIONS[@]}"; do
-    if [ "$gateway" = "$location" ]; then
-      echo "✓"
-      return
-    fi
+    if [ "$gateway" = "$1" ]; then return 0; fi
   done
-  echo " "
+  return 1
+}
+
+# print_row <location> <latency> <style-on> <style-off>: styles only the ID cell.
+print_row() {
+  local name gateway=' '
+  name=$(get_location_name "$1")
+  if [ -n "$ACCESSIBLE" ]; then gateway=no; fi
+  if is_gateway "$1"; then
+    gateway='✓'
+    if [ -n "$ACCESSIBLE" ]; then gateway=yes; fi
+  fi
+  outf '%s%-6s%s  %s  %11s  %s\n' "$3" "$1" "$4" "$(pad_to "$name" 36)" "$2ms" "$gateway"
 }
 
 main() {
@@ -465,7 +503,7 @@ fi
 
 classify_results
 
-# Get the fastest location
+# Get the fastest region
 fastest_location=
 fastest_latency=
 if [ ${#SORTED_ROWS[@]} -gt 0 ]; then
@@ -473,65 +511,33 @@ if [ ${#SORTED_ROWS[@]} -gt 0 ]; then
   fastest_latency=${SORTED_ROWS[0]#* }
 fi
 
-# Print sorted results
 for entry in ${SORTED_ROWS[@]+"${SORTED_ROWS[@]}"}; do
-  location=${entry% *}
-  latency=${entry#* }
-  gateway_mark=$(is_gateway "$location")
-  
-  # Make sure location name is not too long
-  location_name=$(get_location_name "$location")
-  if [ ${#location_name} -gt 36 ]; then
-    location_name="${location_name:0:33}..."
-  fi
-  
-  # Add special handling for cities with non-ASCII characters and highlight fastest
-  if [ "$location" = "$fastest_location" ]; then
-    case "$location" in
-      "gru"|"bog"|"qro")
-        printf "${BOLD}%-6s  %-36s   ${BOLD}%11s${RESET}${BOLD}  %s${RESET}\n" "$location" "$location_name" "${latency}ms" "$gateway_mark"
-        ;;
-      *)
-        printf "${BOLD}%-6s  %-36s  ${BOLD}%11s${RESET}${BOLD}  %s${RESET}\n" "$location" "$location_name" "${latency}ms" "$gateway_mark"
-        ;;
-    esac
+  if [ "${entry% *}" = "$fastest_location" ]; then
+    print_row "${entry% *}" "${entry#* }" "$BOLD" "$RESET"
   else
-    case "$location" in
-      "gru"|"bog"|"qro")
-        printf "%-6s  %-36s   %11s  %s\n" "$location" "$location_name" "${latency}ms" "$gateway_mark"
-        ;;
-      *)
-        printf "%-6s  %-36s  %11s  %s\n" "$location" "$location_name" "${latency}ms" "$gateway_mark"
-        ;;
-    esac
+    print_row "${entry% *}" "${entry#* }" '' ''
   fi
 done
 
 if [ ${#FAILED[@]} -gt 0 ]; then
-  echo
-  echo "Failed to connect to these regions:"
+  outf '\n'
+  outf 'Failed to connect to these regions:\n'
   for location in "${FAILED[@]}"; do
     if [ -f "$TEMP_DIR/res/$location" ]; then
-      echo "- $location ($(get_location_name "$location"))"
+      outf '%s\n' "- $location ($(get_location_name "$location"))"
     else
-      echo "- $location ($(get_location_name "$location")): no result within $(probe_deadline_seconds)s"
+      outf '%s\n' "- $location ($(get_location_name "$location")): no result within $(probe_deadline_seconds)s"
     fi
   done
 fi
 
-# Show fastest region
+outf '\n'
 if [ -n "$fastest_location" ]; then
-  # Check if it's a gateway
-  gateway_info=""
-  if [ "$(is_gateway "$fastest_location")" = "✓" ]; then
-    gateway_info=" (Gateway Region)"
-  fi
-  
-  echo
-  echo -e "Fastest region: ${BOLD}$fastest_location ($(get_location_name "$fastest_location")) - ${BOLD}${fastest_latency}ms${RESET}${BOLD}${gateway_info}${RESET}"
+  gateway_info=''
+  if is_gateway "$fastest_location"; then gateway_info=' (Gateway Region)'; fi
+  outf 'Fastest region: %s%s%s (%s) - %sms%s\n' "$BOLD" "$fastest_location" "$RESET" "$(get_location_name "$fastest_location")" "$fastest_latency" "$gateway_info"
 else
-  echo
-  echo "No successful connections to any region."
+  outf 'No successful connections to any region.\n'
 fi
 
 exit 0

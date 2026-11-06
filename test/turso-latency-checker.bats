@@ -327,3 +327,66 @@ printed_commands() {
   [ "$regions" -eq 35 ]
   printf '%s\n' "$stripped" | grep -Fxq 'Fastest region: ams (Amsterdam, Netherlands) - 50ms (Gateway Region)'
 }
+
+@test "B4-T1 color: no escape bytes when piped, with NO_COLOR, --no-color or TERM=dumb" {
+  run_cli
+  [[ $output$stderr != *$'\033'* ]]
+  NO_COLOR=1 run_cli
+  [[ $output$stderr != *$'\033'* ]]
+  run_cli --no-color
+  [[ $output$stderr != *$'\033'* ]]
+  TERM=dumb run_cli
+  [[ $output$stderr != *$'\033'* ]]
+}
+
+@test "B4-T2 color: only a rich stdout is styled; forced color on a pipe tints only the Error: prefix" {
+  export STUB_CURL_TIMES="ams:0.010"
+  run_tty
+  [[ $output == *$'\033[1m'ams$'\033[0m'* ]]
+  [[ $output != *$'\033[1;36m'* ]]
+  [[ $output != *$'\033[0;36m'* ]]
+  styled_rows=$(tty_text | grep -E '^[a-z]{3} ')
+  NO_COLOR=1 run_tty
+  [ "$styled_rows" = "$(tty_text | grep -E '^[a-z]{3} ')" ]
+
+  FORCE_COLOR=1 run_cli
+  [[ $output != *$'\033'* ]]
+  FORCE_COLOR=1 run_cli --jsno
+  [ "${stderr_lines[0]}" = $'\033[31mError:\033[0m Unknown option --jsno for turso-latency-checker.' ]
+  [ "${stderr_lines[2]}" = "    turso-latency-checker --help" ]
+
+  # The spinner's erase sequence is not color, so this checks color sequences only.
+  FORCE_COLOR=0 run_tty
+  ! printf '%s\n' "$output" | grep -q $'\033\\[[0-9;]*m'
+}
+
+@test "B4-T3 tty: spinner animates on a TTY, not in accessible mode or CI" {
+  run_tty
+  [[ $output == *$'\r'* ]]
+  [[ $output == *⠋* ]]
+  TURSO_LATENCY_ACCESSIBLE=1 run_tty
+  [[ $output != *$'\r'* ]]
+  [[ $output != *⠋* ]]
+  CI=1 run_tty
+  [[ $output != *$'\r'* ]]
+  [[ $output != *⠋* ]]
+}
+
+@test "B4-T4 table: non-ASCII names align with ASCII rows" {
+  run_cli_1x
+  checked=0
+  re='^(.*[0-9]ms)'
+  while IFS= read -r line; do
+    [[ $line =~ $re ]]
+    [ "$(display_columns "${BASH_REMATCH[1]}")" -eq 57 ]
+    checked=$((checked + 1))
+  done < <(printf '%s\n' "$output" | grep -E '^(ams|gru|bog|qro) ')
+  [ "$checked" -eq 4 ]
+}
+
+@test "B4-T5 gateway: accessible mode prints words, not glyphs" {
+  TURSO_LATENCY_ACCESSIBLE=1 run_cli
+  printf '%s\n' "$output" | grep -qE '^ams .* yes$'
+  printf '%s\n' "$output" | grep -qE '^arn .* no$'
+  [[ $output != *✓* ]]
+}
