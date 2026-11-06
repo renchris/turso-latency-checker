@@ -600,3 +600,10 @@ has_animation() {
   FORCE_COLOR=1 run_cli --help
   [[ $output != *$'\033'* ]]
 }
+
+@test "B13-T3 every cause string lives in the mapper (R296)" {
+  ! sed '/^# ---- cli helpers/,/^# ---- end cli helpers ----/d' "$SCRIPT" |
+    grep -inE 'timed out after|connection refused|DNS lookup failed'
+  grep -q '^cause_for() {' "$SCRIPT"
+  [ "$(grep -c 'time_total} %{http_code}' "$SCRIPT")" -eq 1 ]
+}

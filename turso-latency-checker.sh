@@ -349,6 +349,28 @@ shorten() {
     printf "%s…", out
   }'
 }
+
+# The longest a run can take, in whole seconds: 2 attempts, the backoff and 2 seconds of slack.
+probe_deadline_seconds() {
+  LC_ALL=C awk -v t="$OPT_TIMEOUT" 'BEGIN { d = 2 * t + 2.5; printf "%d", (d == int(d)) ? d : int(d) + 1 }'
+}
+
+# cause_for <curl exit> <http code> <attempts> <stderr file>: sets CAUSE_TEXT, the one
+# place a failure's words come from. A missing exit means the probe left no result.
+cause_for() {
+  local retried='' detail
+  if [ "${3:-1}" -gt 1 ]; then retried='; retried once'; fi
+  case "$1" in
+    '') CAUSE_TEXT="no result within $(probe_deadline_seconds)s" ;;
+    28) CAUSE_TEXT="timed out after ${OPT_TIMEOUT}s$retried" ;;
+    6) CAUSE_TEXT="DNS lookup failed$retried" ;;
+    7) CAUSE_TEXT="connection refused$retried" ;;
+    *)
+      detail=$(sed -n '1s/^curl: ([0-9]*) //p' "$4")
+      CAUSE_TEXT="curl exit $1${detail:+: $detail}$retried"
+      ;;
+  esac
+}
 # ---- end cli helpers ----
 
 print_options() {
@@ -491,11 +513,11 @@ get_location_name() {
 # cancellation stops the probe too. A failed probe is recorded, never a latency.
 # A transient failure is retried once, and only the last attempt's timing counts.
 measure_latency() {
-  local location=$1 rc ms attempt=1 re='^[0-9]+$'
+  local location=$1 rc ms attempt=1 re='^[0-9]+$' total code
   trap 'kill "$CPID" 2>/dev/null; exit 143' TERM
 
   while :; do
-  curl -sS -o /dev/null -w '%{time_total}' --max-time "$OPT_TIMEOUT" -H "fly-prefer-region: $location" "$PROBE_URL" \
+  curl -sS -o /dev/null -w '%{time_total} %{http_code}' --max-time "$OPT_TIMEOUT" -H "fly-prefer-region: $location" "$PROBE_URL" \
     >"$TEMP_DIR/raw/$location" 2>"$TEMP_DIR/err/$location" &
   CPID=$!
   wait "$CPID"
@@ -513,11 +535,12 @@ measure_latency() {
   break
   done
 
-  ms=$(LC_ALL=C awk -v t="$(cat "$TEMP_DIR/raw/$location")" 'BEGIN { if (t !~ /^[0-9]*\.?[0-9]+$/) exit 1; printf "%d", t * 1000 }')
+  read -r total code <"$TEMP_DIR/raw/$location"
+  ms=$(LC_ALL=C awk -v t="$total" 'BEGIN { if (t !~ /^[0-9]*\.?[0-9]+$/) exit 1; printf "%d", t * 1000 }')
   if [ "$rc" -eq 0 ] && [[ $ms =~ $re ]]; then
     atomic_write "$TEMP_DIR/res/$location" "$ms"
   else
-    atomic_write "$TEMP_DIR/res/$location" "ERROR $rc $attempt"
+    atomic_write "$TEMP_DIR/res/$location" "ERROR $rc $attempt ${code:-000}"
   fi
 }
 
@@ -527,11 +550,6 @@ start_probes() {
     measure_latency "$location" &
     PIDS+=($!)
   done
-}
-
-# The longest a run can take, in whole seconds: 2 attempts, the backoff and 2 seconds of slack.
-probe_deadline_seconds() {
-  LC_ALL=C awk -v t="$OPT_TIMEOUT" 'BEGIN { d = 2 * t + 2.5; printf "%d", (d == int(d)) ? d : int(d) + 1 }'
 }
 
 # Waits for every probe, up to the deadline, then stops whatever is left.
@@ -595,26 +613,6 @@ classify_results() {
       SORTED_ROWS+=("$value")
     done < <(printf '%s\n' "${OK_ROWS[@]}" | sort -n -k2)
   fi
-}
-
-# failure_cause <location>: the reason a region has no latency. Never a guess.
-failure_cause() {
-  local rc attempts detail retried=
-  if [ ! -f "$TEMP_DIR/res/$1" ]; then
-    printf 'no result within %ss' "$(probe_deadline_seconds)"
-    return
-  fi
-  read -r _ rc attempts <"$TEMP_DIR/res/$1"
-  if [ "${attempts:-1}" -gt 1 ]; then retried='; retried once'; fi
-  case "$rc" in
-    28) printf 'timed out after %ss%s' "$OPT_TIMEOUT" "$retried" ;;
-    6) printf 'DNS lookup failed%s' "$retried" ;;
-    7) printf 'connection refused%s' "$retried" ;;
-    *)
-      detail=$(sed -n '1s/^curl: ([0-9]*) //p' "$TEMP_DIR/err/$1")
-      printf 'curl exit %s%s%s' "$rc" "${detail:+: $detail}" "$retried"
-      ;;
-  esac
 }
 
 is_gateway() {
@@ -731,7 +729,12 @@ if [ ${#FAILED[@]} -gt 0 ]; then
   outf '\n'
   outf "Couldn't reach %s via %s\n" "$(plural "${#FAILED[@]}" region regions)" "$PROBE_HOST"
   for location in "${FAILED[@]}"; do
-    outf '%s\n' "- $location ($(get_location_name "$location")): $(failure_cause "$location")"
+    rc=
+    attempts=
+    code=
+    if [ -f "$TEMP_DIR/res/$location" ]; then read -r _ rc attempts code <"$TEMP_DIR/res/$location"; fi
+    cause_for "$rc" "$code" "$attempts" "$TEMP_DIR/err/$location"
+    outf '%s\n' "- $location ($(get_location_name "$location")): $CAUSE_TEXT"
   done
 fi
 
