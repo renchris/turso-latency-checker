@@ -182,7 +182,11 @@ resolve_modes() {
     if [ -n "$RICH_ERR" ]; then E_CYAN=$'\033[36m'; fi
   fi
   GLYPH_ERR='Error:'
-  if [ -n "$RICH_ERR" ]; then GLYPH_ERR='✗'; fi
+  ELLIPSIS='...'
+  if [ -n "$RICH_ERR" ]; then
+    GLYPH_ERR='✗'
+    ELLIPSIS='…'
+  fi
 }
 
 # A closed pipe ends quietly.
@@ -373,30 +377,22 @@ probe_deadline_seconds() {
 
 # Waits for every probe, up to the deadline, then stops whatever is left.
 wait_for_probes() {
-  local deadline pid alive spinner_frames i=0 location finished
+  local deadline pid alive
   deadline=$((SECONDS + $(probe_deadline_seconds)))
-  spinner_frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
   while :; do
     alive=0
     for pid in "${PIDS[@]}"; do
       if kill -0 "$pid" 2>/dev/null; then alive=$((alive + 1)); fi
     done
-    finished=0
-    for location in "${LOCATIONS[@]}"; do
-      if [ -f "$TEMP_DIR/res/$location" ]; then finished=$((finished + 1)); fi
-    done
-    echo -ne "\rRunning tests: ${spinner_frames[$i]} $finished of ${#LOCATIONS[@]} "
     if [ "$alive" -eq 0 ]; then break; fi
     if [ "$SECONDS" -ge "$deadline" ]; then
       kill "${PIDS[@]}" 2>/dev/null
       break
     fi
-    i=$(((i + 1) % ${#spinner_frames[@]}))
     sleep 0.1
   done
   wait "${PIDS[@]}" 2>/dev/null
   PIDS=()
-  echo -e "\rRunning tests: Complete!          "
 }
 
 # A missing file, an empty value or an ERROR value all count as failed.
@@ -454,20 +450,18 @@ trap 'exit 129' HUP
 trap 'exit 0' PIPE
 make_temp
 
-echo "Turso Latency Checker"
-echo "====================="
-echo "Measuring latency to all Turso locations..."
-echo
+errf 'Measuring latency to %d Turso regions via %s%s\n' "${#LOCATIONS[@]}" "$PROBE_HOST" "$ELLIPSIS"
 
 start_probes
 wait_for_probes
-echo
 
-# All tests are now complete - collect and sort the results
-echo "RESULTS (sorted by latency)"
-echo "--------------------------------------------------------------------------------"
-printf "%-6s  %-36s  %11s  %s\n" "ID" "LOCATION" "LATENCY" "GATEWAY"
-echo "--------------------------------------------------------------------------------"
+if [ -n "$TTY_OUT" ]; then
+  outf '%s\n' "--------------------------------------------------------------------------------"
+fi
+outf "%-6s  %-36s  %11s  %s\n" "ID" "LOCATION" "LATENCY" "GATEWAY"
+if [ -n "$TTY_OUT" ]; then
+  outf '%s\n' "--------------------------------------------------------------------------------"
+fi
 
 classify_results
 
@@ -539,8 +533,6 @@ else
   echo
   echo "No successful connections to any region."
 fi
-
-echo
 
 exit 0
 }

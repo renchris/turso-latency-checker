@@ -297,3 +297,33 @@ printed_commands() {
   grep -q 'atomic_write' "$SCRIPT"
   ! grep -n 'while true' "$SCRIPT"
 }
+
+@test "B3-T1 streams: piped stdout holds no banner, spinner or carriage return" {
+  run_cli_1x
+  [[ $output != *$'\r'* ]]
+  [[ $output != *Measuring* ]]
+  [[ ${lines[0]} == "ID      LOCATION "* ]]
+  [[ $stderr == *"Measuring latency to 35 Turso regions via region.turso.io:8080..."* ]]
+}
+
+@test "B3-T2 contract: the 1.x piped header and rows are unchanged (Round 2; R384, R402)" {
+  export STUB_CURL_TIME=0.050
+  run_cli_1x
+  stripped=$(printf '%s\n' "$output" | sed $'s/\033\\[[0-9;]*m//g')
+  printf '%s\n' "$stripped" | grep -Fxq "$(printf '%-6s  %-36s  %11s  %s' ID LOCATION LATENCY GATEWAY)"
+  gateways=" ams cdg dfw fra hkg iad lax lhr nrt ord scl sea sin sjc syd yyz "
+  regions=0
+  while IFS='|' read -r code name; do
+    mark=' '
+    [[ $gateways != *" $code "* ]] || mark='✓'
+    # 1.x padded by bytes, with one extra space for the three non-ASCII names.
+    case "$code" in
+      gru | bog | qro) row=$(LC_ALL=C printf '%-6s  %-36s   %11s  %s' "$code" "$name" 50ms "$mark") ;;
+      *) row=$(LC_ALL=C printf '%-6s  %-36s  %11s  %s' "$code" "$name" 50ms "$mark") ;;
+    esac
+    printf '%s\n' "$stripped" | grep -Fxq -- "$row"
+    regions=$((regions + 1))
+  done < <(sed -n 's/^ *"\([a-z]\{3\}\)") echo "\(.*\)" ;;$/\1|\2/p' "$SCRIPT")
+  [ "$regions" -eq 35 ]
+  printf '%s\n' "$stripped" | grep -Fxq 'Fastest region: ams (Amsterdam, Netherlands) - 50ms (Gateway Region)'
+}
