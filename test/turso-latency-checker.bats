@@ -422,3 +422,21 @@ printed_commands() {
   run_cli_1x
   [ "${stderr_lines[${#stderr_lines[@]}-1]}" = "Measured 35 regions." ]
 }
+
+@test "B7-T1 preflight: missing curl fails fast with exit 1" {
+  tools="$BATS_TEST_TMPDIR/tools"
+  mkdir -p "$tools"
+  for tool in awk cat mkdir mktemp mv rm sleep sort tr wc; do
+    ln -s "$(command -v "$tool")" "$tools/$tool"
+  done
+  PATH="$tools" run --separate-stderr "$TLC_BASH" "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+  [ "$stderr" = "Error: Can't measure latency without curl. Install it and rerun turso-latency-checker." ]
+  [ -z "$(find "$TMPDIR" -mindepth 1)" ]
+}
+
+@test "B7-T2 script parses under bash 3.2 and uses env bash" {
+  [ "$(head -1 "$SCRIPT")" = "#!/usr/bin/env bash" ]
+  /bin/bash -n "$SCRIPT"
+}

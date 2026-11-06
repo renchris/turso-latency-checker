@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Turso Latency Checker (Simple Version)
 # A simple script to measure latency to all Turso locations
@@ -255,6 +255,24 @@ cleanup() {
   fi
   stop_spinner
   if [ -n "$TEMP_DIR" ]; then rm -rf "${TEMP_DIR:?}"; fi
+}
+
+# All missing tools in one pass; install steps vary by OS, so no recovery command.
+check_dependencies() {
+  local tool missing=() list
+  for tool in curl awk mktemp; do
+    if ! command -v "$tool" >/dev/null 2>&1; then missing+=("$tool"); fi
+  done
+  [ ${#missing[@]} -gt 0 ] || return 0
+  list=${missing[0]}
+  case ${#missing[@]} in
+    2) list="${missing[0]} and ${missing[1]}" ;;
+    3) list="${missing[0]}, ${missing[1]}, and ${missing[2]}" ;;
+  esac
+  if [ ${#missing[@]} -eq 1 ]; then
+    die 1 missing_dependency "Can't measure latency without $list. Install it and rerun $PROG."
+  fi
+  die 1 missing_dependency "Can't measure latency without $list. Install them and rerun $PROG."
 }
 
 make_temp() {
@@ -525,6 +543,7 @@ if [ -n "$USAGE_ERR" ]; then
   usage_rows
   die 2 "$USAGE_REASON" "$USAGE_ERR" "See all options" "$PROG --help"
 fi
+check_dependencies
 trap cleanup EXIT
 trap 'stop_spinner; errf "Canceled.\nNothing was changed.\n"; exit 130' INT
 trap 'exit 143' TERM
