@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Turso Latency Checker (Simple Version)
-# A simple script to measure latency to all Turso locations
+# A simple script to measure latency to all Turso regions
 
 # ---- cli helpers (inline: single-file distribution, see README direct download) ----
 PROG=turso-latency-checker
@@ -144,6 +144,11 @@ usage_rows() {
     DIE_ROWS+=("$token: $message")
     shown=$((shown + 1))
   done
+}
+
+# plural <n> <one> <many>: "1 region", "2 regions".
+plural() {
+  if [ "$1" -eq 1 ]; then printf '%s %s' "$1" "$2"; else printf '%s %s' "$1" "$3"; fi
 }
 
 # Precedence: --no-color > non-empty NO_COLOR > FORCE_COLOR (0=off, other=on) > a terminal.
@@ -338,13 +343,13 @@ Learn more: https://github.com/renchris/turso-latency-checker#readme
 USAGE
 }
 
-# List of Turso locations
+# Every Turso region
 LOCATIONS=("ams" "arn" "atl" "bog" "bom" "bos" "cdg" "den" "dfw" "ewr" "eze" "fra" "gdl" "gig" "gru" "hkg" "iad" "jnb" "lax" "lhr" "mad" "mia" "nrt" "ord" "otp" "phx" "qro" "scl" "sea" "sin" "sjc" "syd" "waw" "yul" "yyz")
 
 # Gateway regions
 GATEWAY_REGIONS=("ams" "cdg" "dfw" "fra" "hkg" "iad" "lax" "lhr" "nrt" "ord" "scl" "sea" "sin" "sjc" "syd" "yyz")
 
-# Location names mapping for better readability
+# The city name for each region, for readability
 get_location_name() {
   case "$1" in
     "ams") echo "Amsterdam, Netherlands" ;;
@@ -382,7 +387,7 @@ get_location_name() {
     "waw") echo "Warsaw, Poland" ;;
     "yul") echo "Montreal, Canada" ;;
     "yyz") echo "Toronto, Canada" ;;
-    *) echo "Unknown location" ;;
+    *) printf '%s\n' "$1" ;;
   esac
 }
 
@@ -435,8 +440,10 @@ probe_deadline_seconds() {
 
 # Waits for every probe, up to the deadline, then stops whatever is left.
 wait_for_probes() {
-  local deadline pid alive location finished retry_noted=
+  local deadline pid alive location finished retry_noted='' still_noted='' usual_seconds still_after
   deadline=$((SECONDS + $(probe_deadline_seconds)))
+  usual_seconds=$(LC_ALL=C awk -v t="$OPT_TIMEOUT" 'BEGIN { c = (t == int(t)) ? t : int(t) + 1; printf "%d", c + 1 }')
+  still_after=$((SECONDS + usual_seconds))
   while :; do
     alive=0
     for pid in "${PIDS[@]}"; do
@@ -453,6 +460,12 @@ wait_for_probes() {
       else
         errf 'Retrying automatically%s\n' "$ELLIPSIS"
       fi
+    fi
+    if [ -z "$still_noted" ] && [ "$alive" -gt 0 ] && [ "$SECONDS" -gt "$still_after" ]; then
+      still_noted=1
+      stop_spinner
+      errf 'Still measuring %s. Most runs finish within %s.\n' \
+        "$(plural $((${#LOCATIONS[@]} - finished)) region regions)" "$(plural "$usual_seconds" second seconds)"
     fi
     draw_spinner "$finished" "${#LOCATIONS[@]}"
     if [ "$alive" -eq 0 ]; then break; fi
@@ -557,7 +570,7 @@ start_probes
 wait_for_probes
 classify_results
 if [ ${#FAILED[@]} -eq 0 ]; then
-  errf 'Measured %d regions.\n' "${#LOCATIONS[@]}"
+  errf 'Measured %s.\n' "$(plural "${#LOCATIONS[@]}" region regions)"
 else
   errf 'Measured %d of %d regions. %d failed.\n' "${#OK_ROWS[@]}" "${#LOCATIONS[@]}" "${#FAILED[@]}"
 fi
@@ -588,7 +601,7 @@ done
 
 if [ ${#FAILED[@]} -gt 0 ]; then
   outf '\n'
-  outf "Couldn't reach %d regions via %s\n" "${#FAILED[@]}" "$PROBE_HOST"
+  outf "Couldn't reach %s via %s\n" "$(plural "${#FAILED[@]}" region regions)" "$PROBE_HOST"
   for location in "${FAILED[@]}"; do
     outf '%s\n' "- $location ($(get_location_name "$location")): $(failure_cause "$location")"
   done

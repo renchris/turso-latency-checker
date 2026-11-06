@@ -440,3 +440,35 @@ printed_commands() {
   [ "$(head -1 "$SCRIPT")" = "#!/usr/bin/env bash" ]
   /bin/bash -n "$SCRIPT"
 }
+
+@test "B8-T1 one failed region reads in the singular" {
+  export STUB_CURL_FAIL="bog:3"
+  run_cli_1x
+  printf '%s\n' "$output" | grep -Fxq "Couldn't reach 1 region via region.turso.io:8080"
+  [[ $stderr == *"Measured 34 of 35 regions. 1 failed."* ]]
+}
+
+@test "B8-T2 every region has a name; unknown codes render raw" {
+  (
+    # shellcheck disable=SC1090
+    source "$SCRIPT"
+    for code in "${LOCATIONS[@]}"; do
+      [ "$(get_location_name "$code")" != "$code" ]
+    done
+    [ "$(get_location_name zzz)" = zzz ]
+    for code in "${GATEWAY_REGIONS[@]}"; do
+      [[ " ${LOCATIONS[*]} " == *" $code "* ]]
+    done
+  )
+  ! grep -n 'Unknown location' "$SCRIPT"
+}
+
+@test "B8-T3 a slow run says so once" {
+  export STUB_CURL_HANG=ams
+  TURSO_LATENCY_COMPAT_TABLE=1 run --separate-stderr timeout 40 "$TLC_BASH" "$SCRIPT" --timeout 1
+  [ "$(printf '%s\n' "$stderr" | grep -c '^Still measuring 1 region\. Most runs finish within 2 seconds\.$')" -eq 1 ]
+}
+
+@test "B8-T4 output uses the glossary nouns" {
+  ! grep -nE 'Turso locations|Running tests|fastest location' "$SCRIPT"
+}
