@@ -163,6 +163,7 @@ color_for() {
 }
 
 resolve_modes() {
+  local size=
   TTY_OUT=
   TTY_ERR=
   RICH_OUT=
@@ -174,7 +175,17 @@ resolve_modes() {
   E_RED=
   E_CYAN=
   E_RESET=
-  if [ -t 1 ]; then TTY_OUT=1; fi
+  COLS_OUT=80
+  if [ -t 1 ]; then
+    TTY_OUT=1
+    # stty reads the terminal through fd 3: inside $(...), <&1 would be the substitution's pipe.
+    { size=$(stty size <&3 2>/dev/null); } 3>&1
+    size=${size#* }
+    case "$size" in
+      '' | 0 | *[!0-9]*) ;;
+      *) COLS_OUT=$size ;;
+    esac
+  fi
   if [ -t 2 ]; then TTY_ERR=1; fi
   if [ -n "$TTY_OUT" ] && [ "${TERM:-}" != dumb ]; then RICH_OUT=1; fi
   if [ -n "$TTY_ERR" ] && [ "${TERM:-}" != dumb ] && [ -z "${TURSO_LATENCY_ACCESSIBLE:-}" ]; then RICH_ERR=1; fi
@@ -301,6 +312,27 @@ display_width() {
 
 pad_to() {
   printf '%s%*s' "$1" $(($2 - $(display_width "$1"))) ''
+}
+
+# shorten <s> <cols>: cuts by display width, a whole UTF-8 sequence at a time.
+shorten() {
+  if [ "$(display_width "$1")" -le "$2" ]; then
+    printf '%s' "$1"
+    return
+  fi
+  printf '%s\n' "$1" | LC_ALL=C awk -v keep="$(($2 - 1))" '{
+    n = 0
+    out = ""
+    for (i = 1; i <= length($0); i++) {
+      c = substr($0, i, 1)
+      if (c < "\200" || c >= "\300") {
+        if (n == keep) break
+        n++
+      }
+      out = out c
+    }
+    printf "%s…", out
+  }'
 }
 # ---- end cli helpers ----
 
@@ -529,16 +561,54 @@ is_gateway() {
   return 1
 }
 
+# The Location column on a terminal: 26 is ID 6, Latency 7, Gateway 7 and three gaps.
+terminal_location_width() {
+  local width=$((COLS_OUT - 26))
+  if [ "$width" -gt 36 ]; then width=36; fi
+  printf '%s' "$width"
+}
+
+print_rule() {
+  local width=$(($(terminal_location_width) + 26)) rule
+  rule=$(printf '%*s' "$width" '')
+  outf '%s\n' "${rule// /-}"
+}
+
+print_header() {
+  local width
+  if [ -z "$TTY_OUT" ]; then
+    outf "%-6s  %-36s  %11s  %s\n" "ID" "LOCATION" "LATENCY" "GATEWAY"
+    return
+  fi
+  width=$(terminal_location_width)
+  # Below 8 columns for Location each region prints as a record, with no header.
+  if [ "$width" -lt 8 ]; then return; fi
+  print_rule
+  outf "%-6s  %-${width}s  %7s  %s\n" "ID" "LOCATION" "LATENCY" "GATEWAY"
+  print_rule
+}
+
 # print_row <location> <latency> <style-on> <style-off>: styles only the ID cell.
 print_row() {
-  local name gateway=' '
+  local name gateway=' ' width
   name=$(get_location_name "$1")
   if [ -n "$ACCESSIBLE" ]; then gateway=no; fi
   if is_gateway "$1"; then
     gateway='✓'
     if [ -n "$ACCESSIBLE" ]; then gateway=yes; fi
   fi
-  outf '%s%-6s%s  %s  %11s  %s\n' "$3" "$1" "$4" "$(pad_to "$name" 36)" "$2ms" "$gateway"
+  if [ -z "$TTY_OUT" ]; then
+    outf '%s%-6s%s  %s  %11s  %s\n' "$3" "$1" "$4" "$(pad_to "$name" 36)" "$2ms" "$gateway"
+    return
+  fi
+  width=$(terminal_location_width)
+  if [ "$width" -lt 8 ]; then
+    if is_gateway "$1"; then gateway='  gateway'; else gateway=''; fi
+    outf '%s%s%s  %s%s\n' "$3" "$1" "$4" "$2ms" "$gateway"
+    outf '  %s\n' "$(shorten "$name" $((COLS_OUT - 2)))"
+    return
+  fi
+  outf '%s%-6s%s  %s  %7s  %s\n' "$3" "$1" "$4" "$(pad_to "$(shorten "$name" "$width")" "$width")" "$2ms" "$gateway"
 }
 
 main() {
@@ -575,13 +645,7 @@ else
   errf 'Measured %d of %d regions. %d failed.\n' "${#OK_ROWS[@]}" "${#LOCATIONS[@]}" "${#FAILED[@]}"
 fi
 
-if [ -n "$TTY_OUT" ]; then
-  outf '%s\n' "--------------------------------------------------------------------------------"
-fi
-outf "%-6s  %-36s  %11s  %s\n" "ID" "LOCATION" "LATENCY" "GATEWAY"
-if [ -n "$TTY_OUT" ]; then
-  outf '%s\n' "--------------------------------------------------------------------------------"
-fi
+print_header
 
 # Get the fastest region
 fastest_location=

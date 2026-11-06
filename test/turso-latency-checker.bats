@@ -472,3 +472,50 @@ printed_commands() {
 @test "B8-T4 output uses the glossary nouns" {
   ! grep -nE 'Turso locations|Running tests|fastest location' "$SCRIPT"
 }
+
+# Table lines only: stderr prose on a shared terminal wraps on its own.
+tty_table_lines() {
+  tty_text | grep -E '^([a-z]{3} |ID |-+$)' || true
+}
+
+@test "B9-T1 TTY table at 40, 80 and 120 columns (R401)" {
+  run_tty_cols 40
+  table=$(tty_table_lines)
+  while IFS= read -r line; do
+    [ "$(display_columns "$line")" -le 40 ]
+  done <<<"$table"
+  rows=$(printf '%s\n' "$table" | grep -E '^[a-z]{3} ')
+  [ "$(printf '%s\n' "$rows" | wc -l | tr -d ' ')" -eq 35 ]
+  [ "$(printf '%s\n' "$rows" | grep -cE ' 50ms( |$)')" -eq 35 ]
+  printf '%s\n' "$rows" | grep -q '… '
+
+  for cols in 80 120; do
+    run_tty_cols "$cols"
+    table=$(tty_table_lines)
+    [[ $table != *…* ]]
+    printf '%s\n' "$table" | grep -q '^lax .*Los Angeles, California (US)'
+  done
+
+  COLUMNS=40 run_cli_1x
+  re='^(.*[0-9]ms)'
+  [[ $(printf '%s\n' "$output" | grep '^ams ') =~ $re ]]
+  [ "$(display_columns "${BASH_REMATCH[1]}")" -eq 57 ]
+}
+
+@test "B9-T2 a very narrow TTY prints records" {
+  run_tty_cols 30
+  table=$(tty_text | grep -E '^([a-z]{3} |  [A-Z])' | grep -vE '^  (Measuring|Still|Retrying)')
+  while IFS= read -r line; do
+    [ "$(display_columns "$line")" -le 30 ]
+  done <<<"$table"
+  printf '%s\n' "$table" | grep -qE '^ams +[0-9]+ms +gateway$'
+  [ "$(printf '%s\n' "$table" | grep -A1 -E '^ams ' | sed -n 2p)" = "  Amsterdam, Netherlands" ]
+}
+
+@test "B9-T3 an unknown width falls back to 80 (Round 2 re-check)" {
+  run_tty_cols 0
+  table=$(tty_text)
+  printf '%s\n' "$table" | grep -qE '^ams +Amsterdam, Netherlands +[0-9]+ms'
+  ! printf '%s\n' "$table" | grep -q '…$'
+  ! printf '%s\n' "$table" | grep -qE '^ams +[0-9]+ms'
+}
