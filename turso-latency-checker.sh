@@ -462,7 +462,7 @@ measure_latency() {
   if [ "$rc" -eq 0 ] && [[ $ms =~ $re ]]; then
     atomic_write "$TEMP_DIR/res/$location" "$ms"
   else
-    atomic_write "$TEMP_DIR/res/$location" "ERROR $rc"
+    atomic_write "$TEMP_DIR/res/$location" "ERROR $rc $attempt"
   fi
 }
 
@@ -544,20 +544,20 @@ classify_results() {
 
 # failure_cause <location>: the reason a region has no latency. Never a guess.
 failure_cause() {
-  local result rc detail
+  local rc attempts detail retried=
   if [ ! -f "$TEMP_DIR/res/$1" ]; then
     printf 'no result within %ss' "$(probe_deadline_seconds)"
     return
   fi
-  result=$(cat "$TEMP_DIR/res/$1")
-  rc=${result#ERROR }
+  read -r _ rc attempts <"$TEMP_DIR/res/$1"
+  if [ "${attempts:-1}" -gt 1 ]; then retried='; retried once'; fi
   case "$rc" in
-    28) printf 'timed out after %ss' "$OPT_TIMEOUT" ;;
-    6) printf 'DNS lookup failed' ;;
-    7) printf 'connection refused' ;;
+    28) printf 'timed out after %ss%s' "$OPT_TIMEOUT" "$retried" ;;
+    6) printf 'DNS lookup failed%s' "$retried" ;;
+    7) printf 'connection refused%s' "$retried" ;;
     *)
       detail=$(sed -n '1s/^curl: ([0-9]*) //p' "$TEMP_DIR/err/$1")
-      printf 'curl exit %s%s' "$rc" "${detail:+: $detail}"
+      printf 'curl exit %s%s%s' "$rc" "${detail:+: $detail}" "$retried"
       ;;
   esac
 }

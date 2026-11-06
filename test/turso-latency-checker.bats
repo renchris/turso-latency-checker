@@ -581,3 +581,12 @@ has_animation() {
   CI=1 run_tty --non-interactive=false
   ! has_animation
 }
+
+@test "B11-T1 a retried failure says so; a non-transient one does not" {
+  export STUB_CURL_FAIL="bog:28 arn:3"
+  run_cli_1x
+  printf '%s\n' "$output" | grep -Fxq -- "- bog (Bogotá, Colombia): timed out after 3s; retried once"
+  printf '%s\n' "$output" | grep '^- arn ' | grep -qv retried
+  [ "$(grep -c '^bog ' "$STUB_CURL_LOG")" -eq 2 ]
+  [ "$(grep -c '^arn ' "$STUB_CURL_LOG")" -eq 1 ]
+}
