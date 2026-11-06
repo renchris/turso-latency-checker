@@ -1,0 +1,100 @@
+#!/bin/sh
+# Stub curl for the test suite. It never execs a real curl. Knobs (env):
+#   STUB_CURL_LOG        append "<region> <argv>" per call
+#   STUB_CURL_PIDS       append this process id per call
+#   STUB_CURL_TIME       time_total for every region (default 0.050)
+#   STUB_CURL_TIMES      "ams:0.010 arn:0.020" per-region time_total
+#   STUB_CURL_FAIL       "bog:28 gru:7" per-region exit code
+#   STUB_CURL_FAIL_ALL   exit code for every region
+#   STUB_CURL_FAIL_ONCE  "ams:7" exit code for the first call of a region only
+#   STUB_CURL_SLEEP      seconds to sleep; honors --max-time, then exits 28
+#   STUB_CURL_HANG       "ams arn" regions that ignore --max-time and sleep 60
+#   STUB_CURL_HTTP       "bog:503" per-region status for %{http_code} (default 200)
+#   STUB_CURL_HTTP_ALL   status for every region
+
+argv=$*
+region=
+max_time=
+write_out=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -H)
+      case "$2" in
+        "fly-prefer-region: "*) region=${2#fly-prefer-region: } ;;
+      esac
+      shift 2
+      ;;
+    --max-time) max_time=$2; shift 2 ;;
+    -w) write_out=$2; shift 2 ;;
+    -o) shift 2 ;;
+    *) shift ;;
+  esac
+done
+
+[ -n "${STUB_CURL_LOG:-}" ] && printf '%s %s\n' "$region" "$argv" >>"$STUB_CURL_LOG"
+[ -n "${STUB_CURL_PIDS:-}" ] && printf '%s\n' "$$" >>"$STUB_CURL_PIDS"
+
+lookup() {
+  for pair in $1; do
+    case "$pair" in
+      "$2":*) printf '%s' "${pair#*:}"; return 0 ;;
+    esac
+  done
+  return 1
+}
+
+child=
+trap '[ -n "$child" ] && kill "$child" 2>/dev/null; exit 143' TERM
+
+nap() {
+  sleep "$1" >/dev/null 2>&1 &
+  child=$!
+  wait "$child"
+  child=
+}
+
+time_total=${STUB_CURL_TIME:-0.050}
+per_region=$(lookup "${STUB_CURL_TIMES:-}" "$region") && time_total=$per_region
+
+http_code=${STUB_CURL_HTTP_ALL:-200}
+per_region=$(lookup "${STUB_CURL_HTTP:-}" "$region") && http_code=$per_region
+
+rc=0
+[ -n "${STUB_CURL_FAIL_ALL:-}" ] && rc=$STUB_CURL_FAIL_ALL
+per_region=$(lookup "${STUB_CURL_FAIL:-}" "$region") && rc=$per_region
+if per_region=$(lookup "${STUB_CURL_FAIL_ONCE:-}" "$region"); then
+  attempts="${BATS_TEST_TMPDIR:-/tmp}/attempts"
+  mkdir -p "$attempts"
+  if [ ! -e "$attempts/$region" ]; then
+    : >"$attempts/$region"
+    rc=$per_region
+  fi
+fi
+
+for hung in ${STUB_CURL_HANG:-}; do
+  [ "$hung" = "$region" ] && nap 60
+done
+
+if [ -n "${STUB_CURL_SLEEP:-}" ]; then
+  if [ -n "$max_time" ] && awk -v s="$STUB_CURL_SLEEP" -v m="$max_time" 'BEGIN { exit !(s >= m) }'; then
+    nap "$max_time"
+    rc=28
+  else
+    nap "$STUB_CURL_SLEEP"
+  fi
+fi
+
+[ "$rc" -eq 0 ] || http_code=000
+printf '%s' "$write_out" | sed -e "s/%{time_total}/$time_total/" -e "s/%{http_code}/$http_code/"
+
+if [ "$rc" -ne 0 ]; then
+  case "$rc" in
+    6) message="Could not resolve host: region.turso.io" ;;
+    7) message="Failed to connect to region.turso.io port 8080" ;;
+    28) message="Operation timed out" ;;
+    56) message="Recv failure" ;;
+    *) message="Stub failure" ;;
+  esac
+  printf 'curl: (%s) %s\n' "$rc" "$message" >&2
+fi
+exit "$rc"
