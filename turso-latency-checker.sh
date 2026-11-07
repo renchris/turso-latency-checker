@@ -307,10 +307,13 @@ die() {
 }
 
 cleanup() {
+  local jobs_left
   trap - EXIT INT TERM HUP PIPE
-  if [ ${#PIDS[@]} -gt 0 ]; then
-    kill "${PIDS[@]}" 2>/dev/null
-    wait "${PIDS[@]}" 2>/dev/null
+  # Every started job, including one a signal caught before PIDS recorded it.
+  jobs_left=$(jobs -p)
+  if [ -n "$jobs_left" ]; then
+    kill $jobs_left 2>/dev/null
+    wait 2>/dev/null
   fi
   stop_spinner
   if [ -n "$TEMP_DIR" ]; then rm -rf "${TEMP_DIR:?}"; fi
@@ -546,13 +549,12 @@ get_location_name() {
 # A transient failure is retried once, and only the last attempt's timing counts.
 measure_latency() {
   local location=$1 rc ms attempt=1 re='^[0-9]+$' total code
-  trap 'kill "$CPID" 2>/dev/null; exit 143' TERM
+  trap 'kill $(jobs -p) 2>/dev/null; exit 143' TERM
 
   while :; do
   curl -sS -o /dev/null -w '%{time_total} %{http_code}' --max-time "$OPT_TIMEOUT" -H "fly-prefer-region: $location" "$PROBE_URL" \
     >"$TEMP_DIR/raw/$location" 2>"$TEMP_DIR/err/$location" &
-  CPID=$!
-  wait "$CPID"
+  wait $!
   rc=$?
   atomic_write "$TEMP_DIR/raw/$location.exit" "$rc"
   if [ "$attempt" -eq 1 ]; then

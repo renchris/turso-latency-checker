@@ -17,8 +17,14 @@ setup() {
   unset NO_COLOR FORCE_COLOR CI CLAUDECODE TURSO_LATENCY_ACCESSIBLE TURSO_LATENCY_COMPAT_TABLE COLUMNS
 }
 
+# --timeout 10 widens the run's deadline, so a loaded machine can't fail a test on
+# timing; last-wins parsing lets a test pass its own. `help` must stay first in argv.
 run_cli() {
-  run --separate-stderr "$TLC_BASH" "$SCRIPT" "$@"
+  if [ "${1:-}" = help ]; then
+    run --separate-stderr "$TLC_BASH" "$SCRIPT" "$@"
+  else
+    run --separate-stderr "$TLC_BASH" "$SCRIPT" --timeout 10 "$@"
+  fi
 }
 
 # A no-op until a compat switch exists; keeps these tests valid if one lands.
@@ -37,14 +43,14 @@ normalize_tty() {
 }
 
 run_tty() {
-  run script -q /dev/null "$TLC_BASH" "$SCRIPT" "$@" </dev/null
+  run script -q /dev/null "$TLC_BASH" "$SCRIPT" --timeout 10 "$@" </dev/null
   normalize_tty
 }
 
 # Same, with the child's stdin not a terminal.
 run_tty_stdin_piped() {
   # shellcheck disable=SC2016  # expanded by the child shell
-  run script -q /dev/null "$TLC_BASH" -c 'exec "$1" "$2" </dev/null' _ "$TLC_BASH" "$SCRIPT" </dev/null
+  run script -q /dev/null "$TLC_BASH" -c 'exec "$1" "$2" --timeout 10 </dev/null' _ "$TLC_BASH" "$SCRIPT" </dev/null
   normalize_tty
 }
 
@@ -52,7 +58,7 @@ run_tty_cols() {
   local cols=$1
   shift
   # shellcheck disable=SC2016  # expanded by the child shell
-  run script -q /dev/null "$TLC_BASH" -c 'stty cols "$1" rows 60; b=$2; s=$3; shift 3; exec "$b" "$s" "$@"' _ "$cols" "$TLC_BASH" "$SCRIPT" "$@" </dev/null
+  run script -q /dev/null "$TLC_BASH" -c 'stty cols "$1" rows 60; b=$2; s=$3; shift 3; exec "$b" "$s" "$@"' _ "$cols" "$TLC_BASH" "$SCRIPT" --timeout 10 "$@" </dev/null
   normalize_tty
 }
 

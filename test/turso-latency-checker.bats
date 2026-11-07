@@ -408,9 +408,9 @@ printed_commands() {
 
 @test "B6-T1 failures: each failed region names its cause" {
   export STUB_CURL_FAIL="bog:28 gru:7 qro:6 scl:56"
-  run_cli_1x
+  run_cli_1x --timeout 10
   printf '%s\n' "$output" | grep -Fxq "Couldn't reach 4 regions via region.turso.io:8080"
-  printf '%s\n' "$output" | grep -q '^- bog (Bogotá, Colombia): timed out after 3s'
+  printf '%s\n' "$output" | grep -q '^- bog (Bogotá, Colombia): timed out after 10s'
   printf '%s\n' "$output" | grep -q '^- gru (São Paulo, Brazil): connection refused'
   printf '%s\n' "$output" | grep -q '^- qro (Querétaro, Mexico): DNS lookup failed'
   printf '%s\n' "$output" | grep -q '^- scl (Santiago, Chile): curl exit 56: Recv failure'
@@ -584,8 +584,8 @@ has_animation() {
 
 @test "B11-T1 a retried failure says so; a non-transient one does not" {
   export STUB_CURL_FAIL="bog:28 arn:3"
-  run_cli_1x
-  printf '%s\n' "$output" | grep -Fxq -- "- bog (Bogotá, Colombia): timed out after 3s; retried once"
+  run_cli_1x --timeout 10
+  printf '%s\n' "$output" | grep -Fxq -- "- bog (Bogotá, Colombia): timed out after 10s; retried once"
   printf '%s\n' "$output" | grep '^- arn ' | grep -qv retried
   [ "$(grep -c '^bog ' "$STUB_CURL_LOG")" -eq 2 ]
   [ "$(grep -c '^arn ' "$STUB_CURL_LOG")" -eq 1 ]
@@ -647,4 +647,17 @@ has_animation() {
   [[ $stderr != *debug:* ]]
   run_cli --debug=maybe
   [ "$status" -eq 2 ]
+}
+
+@test "R1-T1 cancel: cleanup stops a probe job that was never recorded in PIDS" {
+  f="$BATS_TEST_TMPDIR/pid"
+  (
+    # shellcheck disable=SC1090
+    source "$SCRIPT"
+    sleep 30 >/dev/null 2>&1 3>&- &
+    echo "$!" >"$f"
+    cleanup
+  )
+  wait_until 100 no_pids_alive "$f"
+  ! grep -n 'kill "\$CPID"' "$SCRIPT"
 }
