@@ -126,6 +126,13 @@ parse_args() {
     esac
     first=
   done
+  case "${TURSO_LATENCY_ACCESSIBLE:-}" in
+    '' | 1) ;;
+    *)
+      usage_issue "TURSO_LATENCY_ACCESSIBLE=$TURSO_LATENCY_ACCESSIBLE" invalid_arguments \
+        "Use 1, or leave it empty." "Can't use TURSO_LATENCY_ACCESSIBLE=$TURSO_LATENCY_ACCESSIBLE. Use 1, or leave it empty."
+      ;;
+  esac
   if [ ${#USAGE_ISSUES[@]} -gt 1 ]; then
     USAGE_REASON=invalid_arguments
     USAGE_ERR="Can't measure latency. ${#USAGE_ISSUES[@]} inputs are invalid."
@@ -464,6 +471,8 @@ Notes:
   is retried once.
   Results go to stdout; progress goes to stderr.
   Honors NO_COLOR, FORCE_COLOR, CI, CLAUDECODE, and TURSO_LATENCY_ACCESSIBLE=1.
+  An empty variable counts as unset, and options win over variables. Nothing
+  is saved between runs.
 
 Learn more: https://github.com/renchris/turso-latency-checker#readme
 USAGE

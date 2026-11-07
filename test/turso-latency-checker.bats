@@ -618,3 +618,15 @@ has_animation() {
   TURSO_LATENCY_ACCESSIBLE=1 run_tty
   [[ $output != *✓* ]]
 }
+
+@test "B15-T1 environment values are strict and documented (R074, R079)" {
+  TURSO_LATENCY_ACCESSIBLE=0 run_cli
+  [ "$status" -eq 2 ]
+  [ "${stderr_lines[0]}" = "Error: Can't use TURSO_LATENCY_ACCESSIBLE=0. Use 1, or leave it empty." ]
+  assert_no_probes
+  TURSO_LATENCY_ACCESSIBLE=0 run_cli --help
+  [ "$status" -eq 0 ]
+  [[ $output == *"An empty variable counts as unset"* ]]
+  TURSO_LATENCY_ACCESSIBLE= run_cli_1x
+  printf '%s\n' "$output" | grep -qE '^ams .*✓$'
+}
