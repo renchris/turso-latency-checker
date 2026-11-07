@@ -10,12 +10,14 @@ PROBE_HOST=region.turso.io:8080
 PROBE_URL="http://$PROBE_HOST/"
 
 # One record per option, in long-name order: long|short|hint|default|repeat|summary
-OPTS='help|h|||last_wins|Show this help
+OPTS="debug|d|||last_wins|Show each probe's raw result on stderr
+help|h|||last_wins|Show this help
 no-color||||last_wins|Disable color
 non-interactive||||last_wins|Never animate progress (the CLI never prompts)
 timeout||<DURATION>|3s|last_wins|Time limit for each probe, such as 5s (default: 3s)
-version|v|||last_wins|Print the version'
+version|v|||last_wins|Print the version"
 
+OPT_DEBUG=
 OPT_HELP=
 OPT_VERSION=
 OPT_NO_COLOR=
@@ -101,6 +103,10 @@ parse_args() {
     case "$arg" in
       help)
         if [ -n "$first" ]; then OPT_HELP=1; else unknown_command "$arg"; fi
+        ;;
+      -d | --debug | --debug=*)
+        if [ "$arg" = -d ]; then arg=--debug; fi
+        bool_arg "$arg" --debug OPT_DEBUG
         ;;
       -h | --help) OPT_HELP=1 ;;
       -v | --version) OPT_VERSION=1 ;;
@@ -242,6 +248,12 @@ outf() {
   shift
   # shellcheck disable=SC2059
   printf "$fmt" "$@" 2>/dev/null || exit 0
+}
+
+# Debug lines are always allowed on stderr, and hold no remote text.
+dbg() {
+  printf 'debug: %s\n' "$1" >&2
+  ERR_DIRTY=1
 }
 
 errf() {
@@ -540,6 +552,7 @@ measure_latency() {
   CPID=$!
   wait "$CPID"
   rc=$?
+  atomic_write "$TEMP_DIR/raw/$location.exit" "$rc"
   if [ "$attempt" -eq 1 ]; then
     case "$rc" in
       6 | 7 | 28 | 35 | 52 | 56)
@@ -610,6 +623,21 @@ wait_for_probes() {
   wait "${PIDS[@]}" 2>/dev/null
   PIDS=()
   stop_spinner
+}
+
+# One line per region: the raw facts of its last attempt, or none for a region with no result.
+print_debug() {
+  local location rc total code
+  [ "$OPT_DEBUG" = true ] || return 0
+  for location in "${LOCATIONS[@]}"; do
+    if [ ! -f "$TEMP_DIR/res/$location" ]; then
+      dbg "$location curl_exit=none http=none time_total=none"
+      continue
+    fi
+    rc=$(cat "$TEMP_DIR/raw/$location.exit")
+    read -r total code <"$TEMP_DIR/raw/$location"
+    dbg "$location curl_exit=$rc http=${code:-000} time_total=${total:-0}"
+  done
 }
 
 # A missing file, an empty value or an ERROR value all count as failed.
@@ -718,6 +746,7 @@ errf '%sMeasuring latency to %d Turso regions via %s%s\n' "$GUTTER" "${#LOCATION
 
 start_probes
 wait_for_probes
+print_debug
 classify_results
 if [ ${#FAILED[@]} -eq 0 ]; then
   errf '%sMeasured %s.\n' "$GLYPH_OK" "$(plural "${#LOCATIONS[@]}" region regions)"

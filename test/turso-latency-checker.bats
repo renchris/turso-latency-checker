@@ -630,3 +630,21 @@ has_animation() {
   TURSO_LATENCY_ACCESSIBLE= run_cli_1x
   printf '%s\n' "$output" | grep -qE '^ams .*✓$'
 }
+
+@test "B16-T1 --debug shows raw results on stderr and changes nothing else" {
+  export STUB_CURL_FAIL="bog:28" STUB_CURL_HTTP="gru:503"
+  run_cli_1x --debug
+  debug_status=$status
+  debug_stdout=$output
+  [ "$(printf '%s\n' "$stderr" | grep -cE '^debug: [a-z]{3} curl_exit=[0-9]+ http=[0-9]{3} time_total=')" -eq 35 ]
+  printf '%s\n' "$stderr" | grep -q '^debug: bog curl_exit=28 http=000 '
+  printf '%s\n' "$stderr" | grep -q '^debug: gru curl_exit=0 http=503 '
+  run_cli_1x
+  [ "$status" -eq "$debug_status" ]
+  [ "$output" = "$debug_stdout" ]
+  [[ $stderr != *debug:* ]]
+  run_cli_1x --debug=false
+  [[ $stderr != *debug:* ]]
+  run_cli --debug=maybe
+  [ "$status" -eq 2 ]
+}
