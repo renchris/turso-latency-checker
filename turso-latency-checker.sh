@@ -485,6 +485,8 @@ Notes:
   Honors NO_COLOR, FORCE_COLOR, CI, CLAUDECODE, and TURSO_LATENCY_ACCESSIBLE=1.
   An empty variable counts as unset, and options win over variables. Nothing
   is saved between runs.
+  Exits 0 after a finished run, even when regions failed; 1 when it can't
+  start; 2 on a usage error.
 
 Learn more: https://github.com/renchris/turso-latency-checker#readme
 USAGE
