@@ -661,3 +661,28 @@ has_animation() {
   wait_until 100 no_pids_alive "$f"
   ! grep -n 'kill "\$CPID"' "$SCRIPT"
 }
+
+@test "R2-T1 narrow: shorten never prints past a width below one column" {
+  (
+    # shellcheck disable=SC1090
+    source "$SCRIPT"
+    [ -z "$(shorten 'Bogotá, Colombia' 0)" ]
+    [ -z "$(shorten 'Bogotá, Colombia' -1)" ]
+    [ "$(shorten 'Bogotá, Colombia' 1)" = '…' ]
+    [ "$(shorten 'Bogotá, Colombia' 7)" = 'Bogotá…' ]
+  )
+}
+
+@test "R2-T2 closed stdout: help and version stay quiet" {
+  for arg in --help --version; do
+    run --separate-stderr "$TLC_BASH" -c 'exec "$1" "$2" "$3" 1>&-' _ "$TLC_BASH" "$SCRIPT" "$arg"
+    [ "$status" -eq 0 ]
+    [ -z "$stderr" ]
+  done
+}
+
+@test "R2-T3 help: the retry note says which failures are retried" {
+  run_cli --help
+  [[ $output == *"a probe that"*"hits a timeout or network error is retried once."* ]]
+  [[ $output != *"a failed probe"* ]]
+}

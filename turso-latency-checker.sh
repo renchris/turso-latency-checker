@@ -362,6 +362,7 @@ pad_to() {
 
 # shorten <s> <cols>: cuts by display width, a whole UTF-8 sequence at a time.
 shorten() {
+  if [ "$2" -lt 1 ]; then return; fi
   if [ "$(display_width "$1")" -le "$2" ]; then
     printf '%s' "$1"
     return
@@ -482,8 +483,8 @@ Examples:
 
 Notes:
   Each region gets a plain-HTTP GET to http://region.turso.io:8080/ with a
-  fly-prefer-region header. All regions run in parallel, and a failed probe
-  is retried once.
+  fly-prefer-region header. All regions run in parallel, and a probe that
+  hits a timeout or network error is retried once.
   Results go to stdout; progress goes to stderr.
   Honors NO_COLOR, FORCE_COLOR, CI, CLAUDECODE, and TURSO_LATENCY_ACCESSIBLE=1.
   An empty variable counts as unset, and options win over variables. Nothing
@@ -727,11 +728,11 @@ main() {
 parse_args "$@"
 resolve_modes
 if [ -n "$OPT_HELP" ]; then
-  usage
+  usage 2>/dev/null
   exit 0
 fi
 if [ -n "$OPT_VERSION" ]; then
-  printf '%s\n' "$VERSION"
+  outf '%s\n' "$VERSION"
   exit 0
 fi
 if [ -n "$USAGE_ERR" ]; then
